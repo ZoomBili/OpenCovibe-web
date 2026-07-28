@@ -59,7 +59,7 @@ opencovibe-server_v0.2.6_linux_amd64.tar.gz: OK
 [OpenCovibe] Workspace: /vol1/1000/aicoding
 [OpenCovibe] No Claude Code or Codex files were installed or modified.
 ```
-1、内网访问http://192.168.31.2:9476或公网访问反代后的地址
+1、内网访问http://宿主机ip:9476或公网访问反代后的地址
 <img width="2564" height="1458" alt="image" src="https://github.com/user-attachments/assets/81b1f0ba-1f9a-41f9-8ec2-496af774bf05" />
 
 2、找到上面安装脚本完成后的持久化Token，输入Token后访问（首次）。
