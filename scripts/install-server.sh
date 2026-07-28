@@ -522,7 +522,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$RUN_USER
-WorkingDirectory="$(systemd_escape "$WORKSPACE")"
+WorkingDirectory=$(systemd_escape "$WORKSPACE")
 EnvironmentFile=$ENV_FILE
 Environment="HOME=$(systemd_escape "$USER_HOME")"
 ExecStart="$(systemd_escape "${PREFIX}/bin/opencovibe-server")"
@@ -539,12 +539,25 @@ WantedBy=multi-user.target
 EOF
 as_root install -m 0644 "$SERVICE_TMP" "$SERVICE_FILE"
 as_root systemctl daemon-reload
+if command -v systemd-analyze >/dev/null 2>&1; then
+  UNIT_VERIFY_OUTPUT=""
+  if ! UNIT_VERIFY_OUTPUT="$(as_root systemd-analyze verify "$SERVICE_FILE" 2>&1)"; then
+    printf '%s\n' "$UNIT_VERIFY_OUTPUT" >&2
+    die "generated systemd unit is invalid: $SERVICE_FILE"
+  fi
+fi
 
 if [[ "$NO_START" == true ]]; then
   log "Installed without starting the service (--no-start)."
 else
   as_root systemctl enable "$SERVICE_NAME"
-  as_root systemctl restart "$SERVICE_NAME"
+  if ! as_root systemctl restart "$SERVICE_NAME"; then
+    as_root systemctl status "$SERVICE_NAME" --no-pager -l || true
+    if command -v journalctl >/dev/null 2>&1; then
+      as_root journalctl -u "$SERVICE_NAME" -n 100 --no-pager || true
+    fi
+    die "failed to restart $SERVICE_NAME"
+  fi
   if [[ "$BIND" == "::" || "$BIND" == "::1" ]]; then
     HEALTH_URL="http://[::1]:${PORT}/health"
   else
