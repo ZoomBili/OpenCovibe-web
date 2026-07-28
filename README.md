@@ -8,9 +8,8 @@ OpenCovibe Web Server 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovi
 
 要求：
 
-- 使用 systemd 的 Linux，支持 `amd64` 和 `arm64`
+- 使用 systemd 的 Linux，支持 `amd64` 和 `arm64`（例如linux服务器或飞牛nas及其它nas设备）
 - 已安装并登录 Claude Code 或 Codex，至少一个可用
-- 系统具有 `curl`、`tar`、`sha256sum` 和 `sudo`
 
 从 GitHub Release 安装最新版本：
 
