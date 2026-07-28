@@ -8,6 +8,7 @@ node_modules/
 # Frontend build output
 build/
 .svelte-kit/
+dist-release/
 
 # Rust / Tauri
 src-tauri/target/

@@ -114,6 +114,14 @@ if (-not (Test-Path $RustupPath)) {
     throw "rustup.exe was not found next to cargo.exe"
 }
 
+$temporaryToolRoot = Join-Path $env:TEMP "opencovibe-rust-toolchain"
+$temporaryCargoHome = Join-Path $temporaryToolRoot "cargo"
+if ($CargoPath.StartsWith($temporaryCargoHome, [StringComparison]::OrdinalIgnoreCase)) {
+    $env:CARGO_HOME = $temporaryCargoHome
+    $env:RUSTUP_HOME = Join-Path $temporaryToolRoot "rustup"
+    Write-Step "Using temporary Rust toolchain at $temporaryToolRoot"
+}
+
 $ToolsPath = Join-Path $env:TEMP "opencovibe-release-tools"
 New-Item -ItemType Directory -Force -Path $ToolsPath | Out-Null
 
@@ -155,13 +163,26 @@ try {
         npm run build
         if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
 
-        & $RustupPath toolchain install $Toolchain --profile minimal
-        if ($LASTEXITCODE -ne 0) { throw "Rust GNU toolchain installation failed" }
+        Write-Step "Checking Rust GNU toolchain"
+        $installedToolchains = @(& $RustupPath toolchain list)
+        if ($LASTEXITCODE -ne 0) { throw "Failed to inspect installed Rust toolchains" }
+        $toolchainPattern = "^$([Regex]::Escape($Toolchain))(\s|$)"
+        if (-not ($installedToolchains | Where-Object { $_ -match $toolchainPattern })) {
+            Write-Step "Installing Rust GNU toolchain"
+            & $RustupPath toolchain install $Toolchain --profile minimal
+            if ($LASTEXITCODE -ne 0) { throw "Rust GNU toolchain installation failed" }
+        }
 
         foreach ($target in $targets) {
+            $installedTargets = @(& $RustupPath target list --installed --toolchain $Toolchain)
+            if ($LASTEXITCODE -ne 0) { throw "Failed to inspect installed Rust targets" }
+            if ($target.RustTarget -notin $installedTargets) {
+                Write-Step "Installing Rust target $($target.RustTarget)"
+                & $RustupPath target add $target.RustTarget --toolchain $Toolchain
+                if ($LASTEXITCODE -ne 0) { throw "Failed to install Rust target $($target.RustTarget)" }
+            }
+
             Write-Step "Building Linux/$($target.Arch)"
-            & $RustupPath target add $target.RustTarget --toolchain $Toolchain
-            if ($LASTEXITCODE -ne 0) { throw "Failed to install Rust target $($target.RustTarget)" }
 
             $targetKey = $target.RustTarget.Replace("-", "_")
             Set-Item "env:CC_$targetKey" $target.CcPath
