@@ -17,7 +17,9 @@ OpenCovibe Web Server 是 Claude Code 和 Codex 的浏览器界面。项目只�
 ```bash
 REPO="ZoomBili/OpenCovibe-web"
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
-  | sudo env OPENCOVIBE_REPO="$REPO" bash
+  | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
+      --version v0.2.6 \
+      --workspace /vol1/1000/aicoding（替换为你的工作空间）
 ```
 
 安装器会完成以下操作：
@@ -31,6 +33,32 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-serve
 安装器不会下载、登录、升级或删除 Claude Code/Codex，也不会修改 `~/.claude` 和 `~/.codex`。
 
 默认访问地址为 `http://服务器IP:9476`。服务默认使用执行 `sudo` 前的用户，并把该用户主目录作为工作目录。
+
+```安装后的示例：
+root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
+  | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
+      --version v0.2.6 \
+      --workspace /vol1/1000/aicoding
+[OpenCovibe] Using existing Claude Code: /vol1/1000/nodejs24/npm-global/bin/claude
+[OpenCovibe] Using existing Codex: /vol1/1000/nodejs24/npm-global/bin/codex
+[OpenCovibe] Downloading OpenCovibe v0.2.6 for linux/amd64
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
+100 4967k  100 4967k    0     0   995k      0  0:00:04  0:00:04 --:--:-- 1456k
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
+100   110  100   110    0     0     22      0  0:00:05  0:00:04  0:00:01    32
+opencovibe-server_v0.2.6_linux_amd64.tar.gz: OK
+[OpenCovibe] Waiting for http://127.0.0.1:9476/health
+[OpenCovibe] Installed OpenCovibe v0.2.6
+[OpenCovibe] URL: http://192.168.31.2:9476
+[OpenCovibe] Token: e17d0abcc1eb3769c0e12c813184b8f90013227ee078a753（持久化token）
+[OpenCovibe] Service user: root
+[OpenCovibe] Workspace: /vol1/1000/aicoding
+[OpenCovibe] No Claude Code or Codex files were installed or modified.
+```
 
 ## 安装选项
 
