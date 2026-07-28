@@ -1,0 +1,559 @@
+use crate::models::{now_iso, RunMeta, RunStatus, TaskRun};
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::fs;
+use std::sync::{Arc, Mutex};
+
+// ── Per-run mutex for serializing read-modify-write on meta.json ──
+
+static META_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn meta_lock(id: &str) -> Arc<Mutex<()>> {
+    META_LOCKS
+        .lock()
+        .unwrap()
+        .entry(id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+/// Execute a read-modify-write on RunMeta under a per-run lock.
+/// Covers active-session hot paths that can race (rename, status, sync).
+pub fn with_meta<F>(id: &str, f: F) -> Result<(), String>
+where
+    F: FnOnce(&mut RunMeta) -> Result<(), String>,
+{
+    let lock = meta_lock(id);
+    let _guard = lock.lock().map_err(|e| format!("meta lock: {e}"))?;
+    let mut meta = get_run(id).ok_or_else(|| format!("Run {} not found", id))?;
+    f(&mut meta)?;
+    save_meta(&meta)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create_run(
+    id: &str,
+    prompt: &str,
+    cwd: &str,
+    agent: &str,
+    status: RunStatus,
+    model: Option<String>,
+    parent_run_id: Option<String>,
+    remote_host_name: Option<String>,
+    remote_cwd: Option<String>,
+    remote_host_snapshot: Option<crate::models::RemoteHost>,
+    platform_id: Option<String>,
+) -> Result<RunMeta, String> {
+    log::debug!(
+        "[storage/runs] create_run: id={}, agent={}, model={:?}, parent={:?}, remote={:?}, platform={:?}, prompt_len={}",
+        id,
+        agent,
+        model,
+        parent_run_id,
+        remote_host_name,
+        platform_id,
+        prompt.len()
+    );
+    let dir = super::run_dir(id);
+    super::ensure_dir(&dir).map_err(|e| e.to_string())?;
+
+    let settings = super::settings::get_user_settings();
+
+    // Codex uses its own auth (ChatGPT / API key) — skip platform_id fallback
+    let skip_platform_fallback = agent == "codex";
+    let (resolved_pid, resolved_base_url) = if skip_platform_fallback {
+        (platform_id, None)
+    } else {
+        // Use explicit platform_id if provided, otherwise fall back to global active
+        let pid = platform_id.or_else(|| settings.active_platform_id.clone());
+
+        // Resolve base_url: credential → known provider defaults → global
+        let base_url = pid
+            .as_ref()
+            .and_then(|pid| {
+                // Try credential's base_url first
+                settings
+                    .platform_credentials
+                    .iter()
+                    .find(|c| c.platform_id == *pid)
+                    .and_then(|c| c.base_url.clone())
+                    .filter(|s| !s.is_empty())
+                    // Fallback to known provider defaults (for keyless platforms without credential)
+                    .or_else(|| super::settings::get_provider_info(pid).and_then(|i| i.base_url))
+            })
+            .or_else(|| settings.anthropic_base_url.clone());
+
+        (pid, base_url)
+    };
+
+    // Snapshot no_session_persistence from agent settings at creation time
+    let agent_settings = super::settings::get_agent_settings(agent);
+    let no_session_persistence = agent_settings.no_session_persistence.unwrap_or(false);
+
+    let meta = RunMeta {
+        id: id.to_string(),
+        prompt: prompt.to_string(),
+        cwd: cwd.to_string(),
+        agent: agent.to_string(),
+        auth_mode: settings.auth_mode,
+        status,
+        started_at: now_iso(),
+        ended_at: None,
+        exit_code: None,
+        error_message: None,
+        session_id: None,
+        result_subtype: None,
+        model,
+        parent_run_id,
+        name: None,
+        remote_host_name,
+        remote_cwd,
+        remote_host_snapshot,
+        platform_id: resolved_pid,
+        platform_base_url: resolved_base_url,
+        source: None,
+        cli_import_watermark: None,
+        cli_session_path: None,
+        cli_usage_incomplete: None,
+        deleted_at: None,
+        no_session_persistence,
+        execution_path: None,   // Caller sets after create_run
+        conversation_ref: None, // Written by runtime events (session_init / thread.started)
+        codex_process_seq: if agent == "codex" { Some(0) } else { None },
+        codex_imported_rollouts: None,
+    };
+
+    save_meta(&meta)?;
+    Ok(meta)
+}
+
+pub fn save_meta(meta: &RunMeta) -> Result<(), String> {
+    let dir = super::run_dir(&meta.id);
+    super::ensure_dir(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("meta.json");
+    let tmp = dir.join(format!(
+        "meta.json.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let json = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    fs::write(&tmp, &json).map_err(|e| format!("write tmp: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
+    for attempt in 0..3u8 {
+        match fs::rename(&tmp, &path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 2 => {
+                log::debug!(
+                    "[storage/runs] save_meta rename PermissionDenied, retry {}",
+                    attempt + 1
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(format!("rename: {e}"));
+            }
+        }
+    }
+    // All retries exhausted (should not reach here, but clean up just in case)
+    let _ = fs::remove_file(&tmp);
+    Err("rename: PermissionDenied after 3 retries".to_string())
+}
+
+/// Read meta.json without deleted_at filtering (internal use).
+fn get_run_raw(id: &str) -> Option<RunMeta> {
+    let path = super::run_dir(id).join("meta.json");
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+pub fn get_run(id: &str) -> Option<RunMeta> {
+    let meta = get_run_raw(id)?;
+    if meta.deleted_at.is_some() {
+        log::debug!("[storage/runs] get_run: id={} is soft-deleted", id);
+        return None;
+    }
+    Some(meta)
+}
+
+/// Increment and return the next codex_process_seq for a run.
+/// First call returns 1 (create_run sets initial value to Some(0)).
+pub fn next_codex_process_seq(run_id: &str) -> Result<u32, String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let result = AtomicU32::new(0);
+    with_meta(run_id, |meta| {
+        let next = meta.codex_process_seq.unwrap_or(0) + 1;
+        meta.codex_process_seq = Some(next);
+        result.store(next, Ordering::Relaxed);
+        Ok(())
+    })?;
+    Ok(result.load(Ordering::Relaxed))
+}
+
+pub fn update_session_id(id: &str, session_id: &str) -> Result<(), String> {
+    if session_id.is_empty() {
+        log::debug!("[storage/runs] update_session_id: empty session_id, skipping");
+        return Ok(());
+    }
+    with_meta(id, |meta| {
+        if meta.session_id.as_deref() == Some(session_id) {
+            log::debug!("[storage/runs] update_session_id: unchanged, skipping");
+            return Ok(());
+        }
+        log::debug!(
+            "[storage/runs] update_session_id: id={}, old={:?}, new={}",
+            id,
+            meta.session_id,
+            session_id
+        );
+        meta.session_id = Some(session_id.to_string());
+        Ok(())
+    })
+}
+
+pub fn rename_run(id: &str, name: &str) -> Result<(), String> {
+    log::debug!("[storage/runs] rename_run: id={}, name={}", id, name);
+    with_meta(id, |meta| {
+        meta.name = if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        };
+        Ok(())
+    })
+}
+
+pub fn update_run_model(id: &str, model: &str) -> Result<(), String> {
+    log::debug!(
+        "[storage/runs] update_run_model: id={}, model={}",
+        id,
+        model
+    );
+    with_meta(id, |meta| {
+        meta.model = Some(model.to_string());
+        Ok(())
+    })
+}
+
+pub fn update_status(
+    id: &str,
+    status: RunStatus,
+    exit_code: Option<i32>,
+    error_message: Option<String>,
+) -> Result<(), String> {
+    log::debug!(
+        "[storage/runs] update_status: id={}, status={:?}, exit_code={:?}",
+        id,
+        status,
+        exit_code
+    );
+    with_meta(id, |meta| {
+        meta.status = status.clone();
+        let is_terminal = matches!(
+            status,
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Stopped
+        );
+        if is_terminal {
+            meta.ended_at = Some(now_iso());
+        } else {
+            meta.ended_at = None;
+        }
+        meta.exit_code = exit_code;
+        meta.error_message = error_message;
+        Ok(())
+    })
+}
+
+/// Persist only error_message and result_subtype without changing status or ended_at.
+/// Used in the event loop when a `result` error arrives — the process may still be running,
+/// so we only save the error info. EOF cleanup later sets the terminal status.
+pub fn persist_result_error(
+    id: &str,
+    error_message: Option<String>,
+    result_subtype: Option<String>,
+) -> Result<(), String> {
+    log::debug!(
+        "[storage/runs] persist_result_error: id={}, error={:?}, subtype={:?}",
+        id,
+        error_message,
+        result_subtype
+    );
+    with_meta(id, |meta| {
+        meta.error_message = error_message;
+        meta.result_subtype = result_subtype;
+        Ok(())
+    })
+}
+
+pub fn list_runs() -> Vec<TaskRun> {
+    let runs_dir = super::runs_dir();
+    if !runs_dir.exists() {
+        return vec![];
+    }
+
+    let mut runs: Vec<TaskRun> = vec![];
+    if let Ok(entries) = fs::read_dir(&runs_dir) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let meta_path = entry.path().join("meta.json");
+            if !meta_path.exists() {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<RunMeta>(&content) {
+                    if meta.deleted_at.is_some() {
+                        continue;
+                    }
+                    // Compute summary from events
+                    let events_path = entry.path().join("events.jsonl");
+                    let (last_activity, msg_count, last_preview) = summarize_events(&events_path);
+
+                    // Skip runs with no events that aren't active (running/pending/idle)
+                    if msg_count == 0
+                        && !matches!(
+                            meta.status,
+                            RunStatus::Running | RunStatus::Pending | RunStatus::Idle
+                        )
+                    {
+                        // Still include if recent (within last hour)
+                        if let Ok(started) = chrono::DateTime::parse_from_rfc3339(&meta.started_at)
+                        {
+                            let age = chrono::Utc::now().signed_duration_since(started);
+                            if age.num_hours() > 1 {
+                                continue;
+                            }
+                        }
+                    }
+
+                    runs.push(meta.to_task_run(last_activity, Some(msg_count), last_preview));
+                }
+            }
+        }
+    }
+
+    runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    runs
+}
+
+fn summarize_events(events_path: &std::path::Path) -> (Option<String>, u32, Option<String>) {
+    if !events_path.exists() {
+        return (None, 0, None);
+    }
+    let content = match fs::read_to_string(events_path) {
+        Ok(c) => c,
+        Err(_) => return (None, 0, None),
+    };
+
+    // Count non-empty lines for msg_count (cheap string scan — no JSON parsing)
+    let total_lines = content.lines().filter(|l| !l.trim().is_empty()).count() as u32;
+
+    // For last_activity + last_preview: only parse last few lines (most recent events)
+    let mut last_ts: Option<String> = None;
+    let mut msg_count: u32 = 0;
+    let mut last_preview: Option<String> = None;
+
+    // Collect last N non-empty lines and count messages only in those
+    // For full msg_count, count user_message/message_complete across entire file cheaply
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Cheap substring check before full JSON parse for msg_count
+        if line.contains("\"user_message\"")
+            || line.contains("\"message_complete\"")
+            || line.contains("\"type\":\"user\"")
+            || line.contains("\"type\":\"assistant\"")
+        {
+            msg_count += 1;
+        }
+    }
+
+    // Parse only last 5 lines for timestamp + preview
+    let last_lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail_start = if last_lines.len() > 5 {
+        last_lines.len() - 5
+    } else {
+        0
+    };
+    for line in &last_lines[tail_start..] {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+            if event.get("_bus").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if let Some(ts) = event.get("ts").and_then(|v| v.as_str()) {
+                    last_ts = Some(ts.to_string());
+                }
+                if let Some(inner) = event.get("event") {
+                    let inner_type = inner.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if inner_type == "user_message" || inner_type == "message_complete" {
+                        if let Some(text) = inner.get("text").and_then(|t| t.as_str()) {
+                            last_preview = Some(truncate_preview(text));
+                        }
+                    }
+                }
+            } else {
+                if let Some(ts) = event.get("timestamp").and_then(|v| v.as_str()) {
+                    last_ts = Some(ts.to_string());
+                }
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if event_type == "user" || event_type == "assistant" {
+                    if let Some(text) = event
+                        .get("payload")
+                        .and_then(|p| p.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        last_preview = Some(truncate_preview(text));
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = total_lines; // available for future use
+    (last_ts, msg_count, last_preview)
+}
+
+fn truncate_preview(text: &str) -> String {
+    if text.chars().count() > 100 {
+        let end = text
+            .char_indices()
+            .nth(100)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        format!("{}...", &text[..end])
+    } else {
+        text.to_string()
+    }
+}
+
+/// Return all run metadata (for stats aggregation)
+pub fn list_all_run_metas() -> Vec<RunMeta> {
+    let runs_dir = super::runs_dir();
+    if !runs_dir.exists() {
+        return vec![];
+    }
+    let mut metas = vec![];
+    if let Ok(entries) = fs::read_dir(&runs_dir) {
+        for entry in entries.flatten() {
+            let meta_path = entry.path().join("meta.json");
+            if !meta_path.exists() {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<RunMeta>(&content) {
+                    if meta.deleted_at.is_some() {
+                        continue;
+                    }
+                    metas.push(meta);
+                }
+            }
+        }
+    }
+    metas
+}
+
+/// Reconcile any "running" runs that survived a crash,
+/// and migrate old runs missing auth_mode.
+pub fn reconcile_orphaned_runs() {
+    let runs_dir = super::runs_dir();
+    if !runs_dir.exists() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(&runs_dir) {
+        for entry in entries.flatten() {
+            let meta_path = entry.path().join("meta.json");
+            if !meta_path.exists() {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&meta_path) {
+                if let Ok(mut meta) = serde_json::from_str::<RunMeta>(&content) {
+                    let mut dirty = false;
+
+                    if matches!(meta.status, RunStatus::Running | RunStatus::Idle) {
+                        meta.status = RunStatus::Stopped;
+                        meta.ended_at = Some(now_iso());
+                        meta.error_message = Some("Recovered after app restart".to_string());
+                        dirty = true;
+                    }
+
+                    // Pending = start_run created meta but start_session never completed.
+                    // On restart these are orphans — mark Failed so they don't linger in nav.
+                    if meta.status == RunStatus::Pending {
+                        meta.status = RunStatus::Failed;
+                        meta.ended_at = Some(now_iso());
+                        meta.error_message = Some("Session never started".to_string());
+                        dirty = true;
+                        log::debug!(
+                            "[storage/runs] reconcile: pending orphan {} -> failed",
+                            meta.id
+                        );
+                    }
+
+                    if dirty {
+                        let _ = save_meta(&meta);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Soft-delete runs by ID list. Pre-checks all IDs, then writes deleted_at.
+/// Best-effort rollback on failure.
+pub fn soft_delete_runs(ids: &[String]) -> Result<u32, String> {
+    // Deduplicate
+    let unique_ids: Vec<&String> = {
+        let mut seen = std::collections::HashSet::new();
+        ids.iter().filter(|id| seen.insert(id.as_str())).collect()
+    };
+
+    // Phase 1: pre-check — read all metas, reject if any not found or still active
+    let mut metas: Vec<RunMeta> = Vec::with_capacity(unique_ids.len());
+    for id in &unique_ids {
+        let meta = get_run_raw(id).ok_or_else(|| format!("Run {} not found", id))?;
+        if meta.deleted_at.is_some() {
+            continue; // already deleted, skip
+        }
+        if matches!(
+            meta.status,
+            RunStatus::Running | RunStatus::Pending | RunStatus::Idle
+        ) {
+            return Err(format!("Cannot delete: run {} is still active", id));
+        }
+        metas.push(meta);
+    }
+
+    // Phase 2: write deleted_at; rollback on failure
+    let now = now_iso();
+    let originals: Vec<RunMeta> = metas.clone();
+    let mut count = 0u32;
+    for meta in &mut metas {
+        meta.deleted_at = Some(now.clone());
+        if let Err(e) = save_meta(meta) {
+            // best-effort rollback
+            for orig in &originals[..=count as usize] {
+                let _ = save_meta(orig);
+            }
+            return Err(format!(
+                "Failed to delete run {}: {}. Rollback attempted.",
+                meta.id, e
+            ));
+        }
+        count += 1;
+    }
+
+    log::debug!("[storage/runs] soft_delete_runs: deleted {} runs", count);
+    Ok(count)
+}

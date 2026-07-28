@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenCovibe Web Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace these values with the Linux user that owns ~/.claude and ~/.codex.
+User=your-user
+WorkingDirectory=/home/your-user
+EnvironmentFile=/etc/opencovibe.env
+Environment=HOME=/home/your-user
+ExecStart=/usr/local/bin/opencovibe-server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

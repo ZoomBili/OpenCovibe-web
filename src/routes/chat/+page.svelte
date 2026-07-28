@@ -1,0 +1,5838 @@
+<script lang="ts">
+  import { page } from "$app/stores";
+  import { goto, replaceState } from "$app/navigation";
+  import { tick, onMount, untrack, getContext } from "svelte";
+  import { getTransport } from "$lib/transport";
+  import * as api from "$lib/api";
+  import {
+    SessionStore,
+    KeybindingStore,
+    getEventMiddleware,
+    loadCliInfo,
+    getCliCurrentModel,
+    getCliCommands,
+    getCliModels,
+    getModelsForAgent,
+    getCodexDefaultModel,
+    loadCodexModels,
+    loadCodexModelsLive,
+    canResumeNow,
+    TERMINAL_PHASES,
+    getResumeWarning,
+    loadCliVersionInfo,
+    getCliVersionInfo_cached,
+    getCodexVersion,
+  } from "$lib/stores";
+  import type {
+    Attachment,
+    BusToolItem,
+    UserSettings,
+    AgentSettings,
+    SessionMode,
+    CliModelInfo,
+    ScreenshotPayload,
+    SessionInfoData,
+    TimelineEntry,
+  } from "$lib/types";
+  import { PLATFORM_PRESETS, findCredential } from "$lib/utils/platform-presets";
+  import { isKnownAgent, getAgentFeatures } from "$lib/utils/agent-features";
+  import {
+    detectBatchGroups,
+    detectToolBursts,
+    isPlanFilePath,
+    planFileName,
+    extractPlanContent,
+  } from "$lib/utils/tool-rendering";
+  import type { ToolBurst } from "$lib/utils/tool-rendering";
+
+  const EMPTY_BATCH_MAP = new Map();
+  const EMPTY_BURST_MAP = new Map() as Map<number, ToolBurst>;
+  import XTerminal from "$lib/components/XTerminal.svelte";
+  import ChatMessage from "$lib/components/ChatMessage.svelte";
+  import InlineToolCard from "$lib/components/InlineToolCard.svelte";
+  import BatchProgressBar from "$lib/components/BatchProgressBar.svelte";
+  import ToolBurstHeader from "$lib/components/ToolBurstHeader.svelte";
+  import SessionStatusBar from "$lib/components/SessionStatusBar.svelte";
+  import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
+  import FeaturesPanel from "$lib/components/FeaturesPanel.svelte";
+  import DiffModal from "$lib/components/DiffModal.svelte";
+  import PromptInput from "$lib/components/PromptInput.svelte";
+  import ScheduledTasksChip from "$lib/components/ScheduledTasksChip.svelte";
+  import TodoPanel from "$lib/components/TodoPanel.svelte";
+  import PermissionPanel from "$lib/components/PermissionPanel.svelte";
+  import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
+  import AgentAuthBadge from "$lib/components/AgentAuthBadge.svelte";
+  import AgentSelector from "$lib/components/AgentSelector.svelte";
+
+  import ToolActivity from "$lib/components/ToolActivity.svelte";
+  import ShortcutHelpPanel from "$lib/components/ShortcutHelpPanel.svelte";
+  import type { PromptInputSnapshot } from "$lib/types";
+  import MarkdownContent from "$lib/components/MarkdownContent.svelte";
+  import HookReviewCard from "$lib/components/HookReviewCard.svelte";
+  import HookExecutionCard from "$lib/components/HookExecutionCard.svelte";
+  import ContextUsageGrid from "$lib/components/ContextUsageGrid.svelte";
+  import CostSummaryView from "$lib/components/CostSummaryView.svelte";
+  import { parseContextMarkdown } from "$lib/utils/context-parser";
+  import type { ContextSnapshot } from "$lib/types";
+  import ReleaseNotesCard from "$lib/components/ReleaseNotesCard.svelte";
+  import { t } from "$lib/i18n/index.svelte";
+  import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { yieldToMain } from "$lib/utils/yield";
+  import {
+    getLastTarget,
+    setLastTarget,
+    getStoredRemoteCwd,
+    setStoredRemoteCwd,
+  } from "$lib/utils/remote-cwd";
+  import { shouldAutoName } from "$lib/utils/auto-name";
+  import { resolvePermissionOptimistic } from "$lib/utils/resolve-permission";
+  import { getToolColor } from "$lib/utils/tool-colors";
+  import { ansiToHtml, hasAnsiCodes } from "$lib/utils/ansi";
+  import { randomSpinnerVerb } from "$lib/utils/spinner-verbs";
+  import { type TurnUsage, classifyError } from "$lib/stores/types";
+  import {
+    mergeWithVirtual,
+    mergeProjectCommands,
+    buildHelpText,
+    CONTEXT_CLEARED_MARKER,
+    parseRalphArgs,
+    VIRTUAL_COMMANDS,
+  } from "$lib/utils/slash-commands";
+  import { executeAddDir } from "$lib/utils/add-dir";
+  import { CODEX_INIT_PROMPT } from "$lib/utils/codex-init-prompt";
+  import {
+    CODEX_REVIEW_UNCOMMITTED_PROMPT,
+    codexReviewBasePrompt,
+    codexReviewCommitPrompt,
+    codexReviewCustomPrompt,
+  } from "$lib/utils/codex-review-prompt";
+  import CodexReviewModal from "$lib/components/CodexReviewModal.svelte";
+  import type { CodexReviewKind } from "$lib/components/CodexReviewModal.svelte";
+  import RewindCodexModal from "$lib/components/RewindCodexModal.svelte";
+  import type { RewindTurn } from "$lib/components/RewindCodexModal.svelte";
+  import GoalPanel from "$lib/components/GoalPanel.svelte";
+  import { buildDoctorReport } from "$lib/utils/doctor";
+  import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
+  import { truncate, cwdDisplayLabel, formatTokenCount } from "$lib/utils/format";
+  import { mapSettled } from "$lib/utils/async-utils";
+  import { uuid } from "$lib/utils/uuid";
+  import RewindModal from "$lib/components/RewindModal.svelte";
+  import FolderPicker from "$lib/components/FolderPicker.svelte";
+  import type { ElementSelection } from "$lib/types";
+  import { isElementSelection } from "$lib/types";
+
+  // ── Helpers ──
+
+  /** Sanitize Codex run.model: if it looks like a Claude model name, return empty. */
+  function codexDisplayModel(model?: string): string {
+    if (!model) return "";
+    return /claude|opus|sonnet|haiku/i.test(model) ? "" : model;
+  }
+
+  // ── Layout context ──
+  const toggleLayoutSidebar = getContext<() => void>("toggleSidebar");
+  const keybindingStore = getContext<KeybindingStore>("keybindings");
+
+  // ── Store + Middleware ──
+  const store = new SessionStore();
+  const middleware = getEventMiddleware();
+
+  // ── UI-only state (not in store) ──
+  let middlewareReady = $state(false);
+  let settings = $state<UserSettings | null>(null);
+  let xtermRef: XTerminal | undefined = $state();
+  let promptRef: PromptInput | undefined = $state();
+  let sidebarCollapsed = $state(false);
+  /** Reactive cwd override for new-chat-in-folder (cleared when a run is loaded) */
+  let folderCwdOverride = $state("");
+  let chatAreaRef: HTMLDivElement | undefined = $state();
+  let isChatAutoScroll = $state(true);
+  /** Non-reactive flag: suppresses auto-scroll reset during search scroll-to navigation. */
+  let _scrollToInFlight = false;
+  let showChatScrollHint = $state(false);
+  let agentSettings = $state<AgentSettings | null>(null);
+  let resuming = $state(false);
+  /** Suppress "Session ended" flash during tool approval restart cycle. */
+  let approving = $state(false);
+  // (pendingResumeText removed — auto-resume uses atomic resume+send via initialMessage)
+  /** Most recent run with a session_id — for "Continue last session" on welcome screen. */
+  let lastContinuableRun = $state<import("$lib/types").TaskRun | null>(null);
+  /** Available remote hosts from settings. */
+  let remoteHosts = $state<import("$lib/types").RemoteHost[]>([]);
+  /** Target host dropdown in hero meta. */
+  let targetDropdownOpen = $state(false);
+  /** Auth overview for AuthSourceBadge. */
+  let authOverview = $state<import("$lib/types").AuthOverview | null>(null);
+
+  /** Folder picker state — resolves a Promise on confirm/cancel. */
+  let folderPickerOpen = $state(false);
+  let folderPickerInitialHost = $state<string | null>(null);
+  let folderPickerInitialPath = $state("");
+  let folderPickerHideTarget = $state(false);
+  let folderPickerResolve: ((v: { hostName: string | null; path: string } | null) => void) | null =
+    null;
+  function openFolderPicker(opts: {
+    initialHost?: string | null;
+    initialPath?: string;
+    hideTargetSelector?: boolean;
+  }): Promise<{ hostName: string | null; path: string } | null> {
+    folderPickerInitialHost = opts.initialHost ?? null;
+    folderPickerInitialPath = opts.initialPath ?? "";
+    folderPickerHideTarget = opts.hideTargetSelector ?? false;
+    folderPickerOpen = true;
+    return new Promise((resolve) => {
+      folderPickerResolve = resolve;
+    });
+  }
+  /** Preloaded skill details from filesystem (has descriptions). */
+  let preloadedSkills = $state<import("$lib/types").StandaloneSkill[]>([]);
+  /** Skills the live Codex agent actually loaded this session (name + path), from the app-server
+   *  `skills/list` runtime query. `path` is required to send a skill as a structured
+   *  {type:"skill"} UserInput. Empty unless there's a live Codex session — the composer skill
+   *  picker is gated on this being non-empty so we never offer a skill we can't actually send. */
+  let codexRuntimeSkills = $state<{ name: string; path: string; description: string }[]>([]);
+  /** Preloaded agent definitions from filesystem. */
+  let preloadedAgents = $state<import("$lib/types").AgentDefinitionSummary[]>([]);
+  /** Project-level commands from {cwd}/.claude/commands/ + ~/.claude/commands/. */
+  let projectCommands = $state<import("$lib/types").CliCommand[]>([]);
+  /** Generation counter for reloadProjectData race guard. */
+  let preloadGen = 0;
+  /** Local proxy running statuses for AuthSourceBadge. */
+  let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
+
+  // ── Codex auth warning ──
+  let codexWarning = $state<string | null>(null);
+  let agentChangeSeq = 0;
+
+  // ── Preview state ──
+  let previewInstanceId = $state("");
+  let previewOpen = $derived(previewInstanceId !== "");
+  let previewUrlBarOpen = $state(false);
+  let previewUrlInput = $state(localStorage.getItem("ocv:preview-url") ?? "http://localhost:");
+
+  // ── Model contamination helpers ──
+
+  /** Cache of last confirmed-clean Anthropic model, used as final fallback. */
+  let lastKnownGoodAnthropicModel: string | undefined;
+
+  /** Detect if default_model was contaminated by a third-party platform model.
+   *  Returns:
+   *  - true  = confirmed contaminated (in third-party models, not in CLI models)
+   *  - false = confirmed clean (in CLI known models)
+   *  - null  = unknown (CLI not loaded, or model not found in any list)
+   */
+  function isContaminatedDefaultModel(dm: string): boolean | null {
+    const cliModels = getCliModels();
+    if (!cliModels.length) return null; // CLI models not loaded yet
+    if (cliModels.some((m) => m.value === dm)) return false; // in CLI model list = clean
+
+    const inThirdParty =
+      PLATFORM_PRESETS.some(
+        (p) => p.id !== "anthropic" && p.id !== "custom" && p.models?.includes(dm),
+      ) ||
+      (settings?.platform_credentials ?? []).some(
+        (c) => c.platform_id !== "anthropic" && c.models?.includes(dm),
+      );
+    return inThirdParty ? true : null; // not in CLI + not in third-party = unknown
+  }
+
+  // ── Project init detection ──
+  let projectInitStatus = $state<import("$lib/types").ProjectInitStatus | null>(null);
+  let initCheckSeq = 0;
+
+  // ── Task notification banner ──
+  let notificationVisible = $state(false);
+  let latestNotification = $state<{ task_id: string; status: string } | null>(null);
+
+  // ── Rewind modal ──
+  let rewindModalOpen = $state(false);
+  let codexReviewPickerOpen = $state(false);
+
+  // ── Codex Wave-3: turn-based rewind + goal modals ──
+  let codexRewindOpen = $state(false);
+  let codexRewindBusy = $state(false);
+  let goalPanelOpen = $state(false);
+
+  // Top-level user messages → selectable turns for the Codex rewind modal.
+  // Built lazily (only when the modal opens) rather than on every stream event:
+  // it's the only consumer, and the per-turn regex/slice work is O(turns). The
+  // cheap `store.userTurnCount` gates whether the entry point is shown/enabled.
+  let codexRewindTurns = $state<RewindTurn[]>([]);
+  function buildCodexRewindTurns(): RewindTurn[] {
+    const turns: RewindTurn[] = [];
+    let idx = 0;
+    for (const e of store.timeline) {
+      if (e.kind === "user") {
+        turns.push({ index: idx, preview: e.content.replace(/\s+/g, " ").trim().slice(0, 80) });
+        idx++;
+      }
+    }
+    return turns;
+  }
+  function openCodexRewind() {
+    codexRewindTurns = buildCodexRewindTurns();
+    codexRewindOpen = true;
+  }
+
+  async function runCodexRewind(opts: { dropFromTurnIndex: number; numTurns: number }) {
+    if (!store.run || effectiveAgent !== "codex") return;
+    codexRewindBusy = true;
+    try {
+      await api.rollbackTurns(store.run.id, opts.numTurns);
+      // Backend rolled back history; mirror it locally (files unchanged).
+      const dropped = store.truncateToTurn(opts.dropFromTurnIndex);
+      appendCommandOutput(t("codexRewind_done", { n: String(dropped) }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      dbgWarn("chat", "codex rewind failed", err);
+      appendCommandOutput(t("codexRewind_failed", { error: msg }));
+    } finally {
+      codexRewindBusy = false;
+    }
+  }
+
+  // Build the review prompt for the picker choice and send it as a Codex turn.
+  function runCodexReview(choice: { kind: CodexReviewKind; value: string }) {
+    if (store.isRunning) {
+      appendCommandOutput(t("codexReview_busy"));
+      return;
+    }
+    const prompt =
+      choice.kind === "base"
+        ? codexReviewBasePrompt(choice.value)
+        : choice.kind === "commit"
+          ? codexReviewCommitPrompt(choice.value)
+          : choice.kind === "custom"
+            ? codexReviewCustomPrompt(choice.value)
+            : CODEX_REVIEW_UNCOMMITTED_PROMPT;
+    void sendMessage(prompt, []);
+  }
+  let rewindDirectTarget = $state<RewindCandidate | null>(null);
+  let rewindMarkers = $state<RewindMarker[]>([]);
+
+  // Clear direct target on modal close
+  $effect(() => {
+    if (!rewindModalOpen) rewindDirectTarget = null;
+  });
+
+  // Auto-name one-shot latch: reset only on actual run ID change
+  let prevAutoNameRunId = "";
+  let autoNameDone = false;
+  $effect(() => {
+    const id = store.run?.id ?? "";
+    if (id !== prevAutoNameRunId) {
+      prevAutoNameRunId = id;
+      autoNameDone = false;
+    }
+  });
+
+  // Clear markers on run switch (explicit prev-value check)
+  let prevRewindRunId = "";
+  $effect(() => {
+    const id = store.run?.id ?? "";
+    if (id !== prevRewindRunId) {
+      prevRewindRunId = id;
+      rewindMarkers = [];
+    }
+  });
+
+  // Lazy: only compute when rewind modal is open (avoids 3 array allocations per timeline change)
+  let rewindCandidates = $derived(
+    rewindModalOpen
+      ? store.timeline
+          .map((e, i) => ({ entry: e, idx: i }))
+          .filter(
+            (
+              x,
+            ): x is {
+              entry: Extract<TimelineEntry, { kind: "user" }> & { cliUuid: string };
+              idx: number;
+            } => x.entry.kind === "user" && !!x.entry.cliUuid,
+          )
+          .reverse()
+          .map(
+            ({ entry, idx }): RewindCandidate => ({
+              cliUuid: entry.cliUuid,
+              content: entry.content,
+              ts: entry.ts,
+              timelineIndex: idx,
+            }),
+          )
+      : [],
+  );
+
+  // ── BTW side question ──
+  let btwState = $state<{
+    active: boolean;
+    btwId: string | null;
+    question: string;
+    answer: string;
+    error: string | null;
+    loading: boolean;
+  }>({ active: false, btwId: null, question: "", answer: "", error: null, loading: false });
+
+  // ── Shortcut help panel ──
+  let shortcutHelpOpen = $state(false);
+  let statusBarRef: SessionStatusBar | undefined = $state();
+  let stashedInput: PromptInputSnapshot | null = $state(null);
+  let sidebarRequestedTab = $state<"tools" | "context" | "files" | "info" | "tasks" | null>(null);
+  let requestedPreviewPath = $state<string | null>(null);
+
+  function openPreviewForPath(path: string) {
+    if (!path) return;
+    requestedPreviewPath = path;
+    sidebarRequestedTab = "files";
+    if (sidebarCollapsed) sidebarCollapsed = false;
+  }
+
+  // Clear preview when run changes (defense-in-depth; ToolActivity also clears via its runId effect)
+  let _lastPreviewClearRunId = "__unset__";
+  $effect(() => {
+    const id = store.run?.id ?? "";
+    if (id !== _lastPreviewClearRunId) {
+      _lastPreviewClearRunId = id;
+      requestedPreviewPath = null;
+    }
+  });
+
+  // ── Verbose state (chat page level) ──
+  let verboseEnabled = $state(false);
+  let verboseSeq = 0;
+  let lastSyncedRunId = "__unset__"; // sentinel ≠ "__no_run__", ensures first-screen trigger
+  let verboseRetryTick = $state(0);
+  let verboseRetryCount = 0;
+  let verboseRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  const VERBOSE_MAX_RETRIES = 3;
+
+  // ── Tool result lazy-load cache (Phase 2) ──
+  let toolResultCache = new Map<string, Record<string, unknown>>();
+  let toolResultInflight = new Map<string, Promise<Record<string, unknown> | null>>();
+  // Clear cache on run switch
+  $effect(() => {
+    const _ = store.run?.id;
+    toolResultCache = new Map();
+    toolResultInflight = new Map();
+  });
+
+  async function fetchToolResult(
+    runId: string,
+    toolUseId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const key = `${runId}:${toolUseId}`;
+    const cached = toolResultCache.get(key);
+    if (cached) return cached;
+    let pending = toolResultInflight.get(key);
+    if (!pending) {
+      pending = api.getToolResult(runId, toolUseId);
+      toolResultInflight.set(key, pending);
+    }
+    try {
+      const result = await pending;
+      // Run-gen check: don't write stale results into a different run's cache
+      if (result && store.run?.id === runId) {
+        toolResultCache.set(key, result);
+      }
+      return result;
+    } finally {
+      toolResultInflight.delete(key);
+    }
+  }
+
+  // ── Timeline rendering ──
+  // Progressive render: start with the most recent N entries, grow on upward scroll.
+  // Switching to a multi-thousand-entry run with `Infinity` would mount thousands of
+  // ChatMessage components in one frame and freeze the WebView (issue #119).
+  const INITIAL_RENDER_LIMIT = 100;
+  const RENDER_GROWTH_STEP = 100;
+  let renderLimit = $state(INITIAL_RENDER_LIMIT);
+  let progressiveGen = 0; // generation counter for stale-callback protection
+  let loadingMore = $state(false);
+  let loadMoreArmed = $state(true); // throttle: re-armed by handleChatScroll
+  let _suppressLoadMoreRearm = false; // raised during programmatic scrollTop adjustment
+
+  async function syncVerboseState(runId: string | undefined) {
+    const key = runId ?? "__no_run__";
+    if (key === lastSyncedRunId) return; // same run — skip
+    const seq = ++verboseSeq;
+    // New run resets retry counter
+    verboseRetryCount = 0;
+    try {
+      const cfg = await api.getCliConfig();
+      if (seq !== verboseSeq) return; // stale response
+      lastSyncedRunId = key; // mark synced on success only
+      verboseEnabled = cfg.verbose === true;
+      dbg("chat", "verbose state synced", { verbose: verboseEnabled, runId, seq });
+    } catch {
+      // Don't mark synced — retry via tick++ after 3s (up to max)
+      if (seq === verboseSeq && verboseRetryCount < VERBOSE_MAX_RETRIES) {
+        verboseRetryCount++;
+        verboseRetryTimer = setTimeout(() => {
+          verboseRetryTimer = null;
+          verboseRetryTick++;
+        }, 3000);
+      }
+    }
+  }
+
+  // ── MCP panel ──
+  let mcpPanelOpen = $state(false);
+
+  // ── Codex features panel (experimentalFeature/list, live session only) ──
+  let featuresPanelOpen = $state(false);
+
+  // ── Codex turn diff (live aggregated diff for the current turn) ──
+  let turnDiffOpen = $state(false);
+
+  // ── CLI session browser ──
+
+  // Track status bar expansion for MCP panel offset
+  let statusBarExpanded = $state(
+    typeof window !== "undefined"
+      ? localStorage.getItem("ocv:statusbar-expanded") !== "false"
+      : true,
+  );
+
+  // ── Tool filtering ──
+  let toolFilter = $state<string | null>(null);
+
+  // ── Input history (most recent first) ──
+  let userHistory = $derived.by(() =>
+    store.timeline
+      .filter((e): e is Extract<TimelineEntry, { kind: "user" }> => e.kind === "user")
+      .map((e) => e.content)
+      .reverse(),
+  );
+
+  let toolNamesInTimeline = $derived.by(() => {
+    const names = new Set<string>();
+    for (const entry of store.timeline) {
+      if (entry.kind === "tool") names.add(entry.tool.tool_name);
+    }
+    return [...names].sort();
+  });
+
+  let filteredTimeline = $derived.by(() => {
+    if (!toolFilter) return store.timeline;
+    return store.timeline.filter((e) => e.kind !== "tool" || e.tool.tool_name === toolFilter);
+  });
+
+  let visibleTimeline = $derived.by(() => {
+    const ft = filteredTimeline;
+    if (renderLimit >= ft.length) return ft;
+    return ft.slice(ft.length - renderLimit);
+  });
+
+  // ── Batch groups (consecutive ≥3 Task tools) ──
+  // Skip batch detection when tool filter is active — filtering removes non-Task
+  // entries, causing originally non-consecutive Tasks to merge into false batches.
+  let batchGroups = $derived(
+    toolFilter
+      ? (EMPTY_BATCH_MAP as Map<number, BusToolItem[]>)
+      : detectBatchGroups(visibleTimeline),
+  );
+
+  let _lastBatchSig = "";
+  $effect(() => {
+    const size = batchGroups.size;
+    const agents = size > 0 ? [...batchGroups.values()].reduce((s, g) => s + g.length, 0) : 0;
+    const sig = `${size}:${agents}`;
+    if (sig !== _lastBatchSig) {
+      _lastBatchSig = sig;
+      if (size > 0) dbg("chat", "batchGroups", { groupCount: size, totalAgents: agents });
+    }
+  });
+
+  // ── Tool burst groups (excludes Task — handled by BatchProgressBar) ──
+  let toolBursts = $derived(toolFilter ? EMPTY_BURST_MAP : detectToolBursts(visibleTimeline));
+
+  // Layer 1: Auto-collapse — completed + no interaction needed → collapsed (derived, pure)
+  let autoCollapsed = $derived.by(() => {
+    const keys = new Set<string>();
+    for (const [, burst] of toolBursts) {
+      const needsInteraction = burst.tools.some(
+        (t) => t.status === "permission_prompt" || t.status === "ask_pending",
+      );
+      if (burst.stats.running === 0 && burst.stats.total > 0 && !needsInteraction) {
+        keys.add(burst.key);
+      }
+    }
+    return keys;
+  });
+
+  // Layer 2: Manual overrides — user explicitly toggled (state, survives re-renders)
+  // true = user forced expand, false = user forced collapse, absent = follow auto
+  let manualOverrides = $state(new Map<string, boolean>());
+
+  function toggleBurst(key: string) {
+    const next = new Map(manualOverrides);
+    const currentlyCollapsed = effectiveCollapsed.has(key);
+    next.set(key, currentlyCollapsed); // if collapsed → override to expanded (true), vice versa
+    manualOverrides = next;
+  }
+
+  // Layer 3: Effective collapsed set — merge auto + manual (derived)
+  // Priority: needsInteraction (force expand) > manual > auto
+  let effectiveCollapsed = $derived.by(() => {
+    const result = new Set<string>();
+    for (const [, burst] of toolBursts) {
+      // Highest priority: interaction needed → always expand, ignore everything else
+      const needsInteraction = burst.tools.some(
+        (t) => t.status === "permission_prompt" || t.status === "ask_pending",
+      );
+      if (needsInteraction) continue;
+
+      const manual = manualOverrides.get(burst.key);
+      if (manual === true) continue; // user forced expand → skip
+      if (manual === false) {
+        // user forced collapse → add
+        result.add(burst.key);
+        continue;
+      }
+      if (autoCollapsed.has(burst.key)) {
+        // no override → follow auto
+        result.add(burst.key);
+      }
+    }
+    return result;
+  });
+
+  // Indices hidden by collapsed bursts (for skipping render)
+  let burstHiddenIndices = $derived.by(() => {
+    const hidden = new Set<number>();
+    for (const [, burst] of toolBursts) {
+      if (effectiveCollapsed.has(burst.key)) {
+        for (let j = burst.startIndex; j <= burst.endIndex; j++) hidden.add(j);
+      }
+    }
+    return hidden;
+  });
+
+  // ── Auto-context tracking ──
+  // Map<runId, snapshots> — persists across run switches within the session
+  let contextHistoryMap = $state<Map<string, ContextSnapshot[]>>(new Map());
+  let contextHistory = $derived(contextHistoryMap.get(store.run?.id ?? "") ?? []);
+
+  // ── Per-run prompt drafts (issue #156) ──
+  // PromptInput unmounts/remounts on run switch (it's gated behind a phase condition, and loadRun
+  // flips phase to "running" mid-replay). So instead of stashing at transition time (unreliable —
+  // promptRef is mid-churn), PromptInput reports every draft change via onDraftChange, and we seed
+  // the freshly-mounted instance from this map via initialDraft (the `{#key}` forces a clean
+  // remount per run). Keyed by run id; "" = the not-yet-started "new chat".
+  let promptDraftsByRun = new Map<string, PromptInputSnapshot>();
+
+  function savePromptDraft(snap: PromptInputSnapshot) {
+    const rid = store.run?.id ?? "";
+    const hasContent =
+      snap.text.trim() ||
+      snap.attachments.length ||
+      snap.pastedBlocks.length ||
+      (snap.pathRefs?.length ?? 0) > 0;
+    if (hasContent) promptDraftsByRun.set(rid, snap);
+    else promptDraftsByRun.delete(rid);
+  }
+
+  // ── Cumulative session token totals (from modelUsage, which is session-cumulative) ──
+  // status bar shows session totals; per-turn values are in the turn separator annotations.
+  let cumulativeTokens = $derived.by(() => {
+    const mu = store.usage.modelUsage;
+    if (!mu || Object.keys(mu).length === 0) {
+      // No modelUsage yet — fall back to per-turn values (better than zero)
+      return {
+        input: store.usage.inputTokens,
+        output: store.usage.outputTokens,
+        cacheRead: store.usage.cacheReadTokens,
+        cacheWrite: store.usage.cacheWriteTokens,
+      };
+    }
+    let input = 0,
+      output = 0,
+      cacheRead = 0,
+      cacheWrite = 0;
+    for (const entry of Object.values(mu)) {
+      input += entry.input_tokens;
+      output += entry.output_tokens;
+      cacheRead += entry.cache_read_tokens;
+      cacheWrite += entry.cache_write_tokens;
+    }
+    return { input, output, cacheRead, cacheWrite };
+  });
+
+  // ── Agent-aware display helpers ──
+  let effectiveAgent = $derived(store.run?.agent ?? store.agent);
+  let agentDisplayName = $derived(effectiveAgent === "codex" ? "Codex" : "Claude");
+
+  // ── Session info for InfoPanel ──
+  let currentSessionInfo: SessionInfoData | null = $derived.by(() => {
+    if (!store.run) return null;
+    return {
+      sessionId: store.run.session_id,
+      runId: store.run.id,
+      runName: store.run.name,
+      cwd: store.sessionCwd || store.run.cwd,
+      numTurns: store.userTurnCount,
+      status: store.run.status ?? "pending",
+      startedAt: store.run.started_at ?? null,
+      endedAt: store.run.ended_at ?? null,
+      lastTurnDurationMs: store.durationMs,
+      tokensEstimated: !store.usage.modelUsage || Object.keys(store.usage.modelUsage).length === 0,
+      model:
+        effectiveAgent === "codex"
+          ? codexDisplayModel(store.run.model)
+          : (store.run.model ?? store.model),
+      agent: store.run.agent ?? store.agent,
+      cliVersion: effectiveAgent === "codex" ? (getCodexVersion() ?? "") : store.cliVersion,
+      permissionMode: store.permissionMode,
+      fastModeState: store.fastModeState,
+      cost: store.usage.cost,
+      inputTokens: cumulativeTokens.input,
+      outputTokens: cumulativeTokens.output,
+      cacheReadTokens: cumulativeTokens.cacheRead,
+      cacheWriteTokens: cumulativeTokens.cacheWrite,
+      contextWindow: store.contextWindow,
+      contextUtilization: store.contextUtilization,
+      compactCount: store.compactCount,
+      microcompactCount: store.microcompactCount,
+      mcpServers: store.mcpServers,
+      remoteHostName: store.remoteHostName,
+      platformId: store.platformId,
+      cliUsageIncomplete: store.run.cli_usage_incomplete ?? false,
+      runSource: store.run.source,
+      authSourceLabel: store.authSourceLabel || undefined,
+      platformName: platformDisplayName || undefined,
+      cliUpdateAvailable:
+        store.cliVersion && channelLatest && channelLatest !== store.cliVersion
+          ? channelLatest
+          : undefined,
+    };
+  });
+
+  // ── Sidebar data ──
+  let sidebarToolsCount = $derived(
+    store.timeline.some((e) => e.kind === "tool")
+      ? store.timeline.filter((e) => e.kind === "tool").length
+      : store.tools.filter((e) => e.tool_name).length,
+  );
+  let hasSidebarData = $derived(
+    !!(store.run || store.tools.length > 0 || store.timeline.some((e) => e.kind === "tool")),
+  );
+
+  // ── CLI version info (reactive — ensures heroMetaFooter re-renders after async load) ──
+  let cliVersionInfo = $derived(getCliVersionInfo_cached());
+
+  // ── CLI update channel ──
+  let channelLatest = $derived.by(() => {
+    if (!cliVersionInfo?.installed) return undefined;
+    return cliVersionInfo.channel === "stable" ? cliVersionInfo.stable : cliVersionInfo.latest;
+  });
+
+  // ── Hero meta version (agent-correct) ──
+  // Codex → codex-cli version (strip the "codex-cli " prefix + leading "v" so chat_cliVersion's
+  // "v{version}" renders cleanly); Claude → its CLI version. The update-check is Claude-only.
+  let heroCliVersion = $derived(
+    effectiveAgent === "codex"
+      ? (getCodexVersion() ?? "").replace(/^codex-cli\s*/i, "").replace(/^v/i, "")
+      : (cliVersionInfo?.installed ?? ""),
+  );
+  let heroHasUpdate = $derived(
+    effectiveAgent !== "codex" &&
+      !!cliVersionInfo?.installed &&
+      !!channelLatest &&
+      cliVersionInfo.installed !== channelLatest,
+  );
+
+  // ── Platform display name ──
+  let platformDisplayName = $derived.by(() => {
+    const pid = store.platformId;
+    if (!pid) return undefined;
+    const preset = PLATFORM_PRESETS.find((p) => p.id === pid);
+    return preset?.name ?? authOverview?.app_platform_name ?? pid;
+  });
+
+  // ── Provider-aware model list ──
+  // When a third-party platform is active and has a models list, use that instead of CLI models.
+  // Priority: credential.models (user-configured) > preset.models (static defaults)
+  let platformModels = $derived.by((): CliModelInfo[] => {
+    const pid = store.platformId;
+    if (!pid || pid === "anthropic") return [];
+    const cred = findCredential(settings?.platform_credentials ?? [], pid);
+    const preset = PLATFORM_PRESETS.find((p) => p.id === pid);
+    const models = cred?.models?.length ? cred.models : preset?.models;
+    if (!models?.length) return [];
+    return models.map((m, i) => ({
+      value: m,
+      displayName: m,
+      description: i === 0 ? "Default" : "",
+    }));
+  });
+
+  let effectiveModels = $derived(getModelsForAgent(effectiveAgent, { platformModels }));
+  let currentEffort = $state("");
+  let isCodexAgent = $derived(store.agent === "codex");
+  let assistantDisplayName = $derived(isCodexAgent ? "Codex" : t("chat_claude"));
+
+  // Effort guard: auto-clear effort when model doesn't support it;
+  // also auto-populate default effort ("high") when empty and model supports it.
+  $effect(() => {
+    if (!store.features.effortSelector) return;
+
+    // Codex: effort is user-driven and persisted to agent settings (not CLI config).
+    // No auto-default — empty means "use Codex's own default" (spawn skips the flag).
+    if (effectiveAgent === "codex") return;
+
+    const pid = store.platformId;
+    // Third-party platform: don't touch effort
+    if (pid && pid !== "anthropic") return;
+
+    const modelInfo = effectiveModels.find((m) => m.value === store.model);
+    if (!modelInfo) return; // models not loaded yet
+
+    if (currentEffort && modelInfo.supportsEffort === false) {
+      // Model doesn't support effort → clear
+      dbg("chat", "effort-guard: clearing for unsupported model", { model: store.model });
+      currentEffort = "";
+      api.updateCliConfig({ effortLevel: null }).catch((e) => {
+        dbgWarn("chat", "effort-guard: CLI config clear failed", e);
+      });
+    } else if (!currentEffort && modelInfo.supportsEffort === true) {
+      // No effort set but model supports it → default to "high" (CLI default)
+      dbg("chat", "effort-guard: defaulting to high", { model: store.model });
+      currentEffort = "high";
+      api.updateCliConfig({ effortLevel: "high" }).catch((e) => {
+        dbgWarn("chat", "effort-guard: CLI config default failed", e);
+      });
+    }
+  });
+
+  // Reset filter on run change & auto-focus input
+  $effect(() => {
+    const _ = store.run?.id;
+    toolFilter = null;
+    // Auto-focus the prompt input when entering a session
+    requestAnimationFrame(() => promptRef?.focus());
+  });
+
+  // Sync verbose state from CLI config when run changes (or on retry)
+  $effect(() => {
+    const _tick = verboseRetryTick; // extra dep: drives retry on failure
+    syncVerboseState(store.run?.id);
+  });
+
+  // ── Progressive timeline rendering ── helpers
+
+  /** Invalidate any in-flight async load so its post-await side effects bail out. */
+  function cancelProgressive() {
+    progressiveGen++;
+  }
+
+  /** Bump the load generation and return it — caller compares against `progressiveGen`. */
+  function nextProgressiveGen(): number {
+    return ++progressiveGen;
+  }
+
+  /**
+   * Expand `renderLimit` enough that `targetIndex` (in `filteredTimeline`) is mounted,
+   * with `margin` extra entries above for context. No-op if already covered.
+   */
+  function expandRenderLimitTo(targetIndex: number, margin = 50) {
+    const ft = filteredTimeline;
+    if (targetIndex < 0 || targetIndex >= ft.length) return;
+    if (renderLimit === Infinity) return;
+    const needed = ft.length - targetIndex + margin;
+    if (renderLimit < needed) renderLimit = Math.min(needed, ft.length);
+  }
+
+  /**
+   * If `visibleIdx` (visibleTimeline-local) sits inside a collapsed tool burst,
+   * force-expand that burst via `manualOverrides` so the entry's DOM mounts.
+   * Caller must pass an index in the visibleTimeline namespace, not filteredTimeline.
+   */
+  async function ensureBurstExpandedFor(visibleIdx: number) {
+    if (!burstHiddenIndices.has(visibleIdx)) return;
+    for (const [, burst] of toolBursts) {
+      if (visibleIdx >= burst.startIndex && visibleIdx <= burst.endIndex) {
+        const next = new Map(manualOverrides);
+        next.set(burst.key, true);
+        manualOverrides = next;
+        await tick();
+        return;
+      }
+    }
+  }
+
+  // Sentinel above the visible list — when it intersects the chat viewport, grow renderLimit.
+  let topSentinel = $state<HTMLDivElement | null>(null);
+  let _topObserver: IntersectionObserver | null = null;
+
+  $effect(() => {
+    if (!topSentinel || !chatAreaRef) {
+      _topObserver?.disconnect();
+      _topObserver = null;
+      return;
+    }
+    _topObserver?.disconnect();
+    _topObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        if (!loadMoreArmed || loadingMore) return;
+        const hidden = filteredTimeline.length - renderLimit;
+        if (hidden <= 0) return;
+        dbg("chat", "progressive-load-more", { renderLimit, hidden });
+        void loadMoreEarlier();
+      },
+      { root: chatAreaRef, rootMargin: "200px 0px 0px 0px", threshold: 0 },
+    );
+    _topObserver.observe(topSentinel);
+    return () => {
+      _topObserver?.disconnect();
+      _topObserver = null;
+    };
+  });
+
+  /**
+   * Grow `renderLimit` by `RENDER_GROWTH_STEP` and preserve the user's scroll position.
+   * Browser-native scroll anchoring is unreliable on WKWebView with content-visibility,
+   * so we measure the first rendered entry's offset before/after and adjust scrollTop
+   * by the delta.
+   */
+  async function loadMoreEarlier() {
+    if (loadingMore || !loadMoreArmed) return;
+    loadingMore = true;
+    loadMoreArmed = false; // re-armed by handleChatScroll on next user scroll
+    try {
+      const anchor = chatAreaRef?.querySelector<HTMLElement>("[data-entry-id]") ?? null;
+      const anchorId = anchor?.dataset.entryId ?? null;
+      const beforeTop = anchor?.getBoundingClientRect().top ?? 0;
+      const beforeScroll = chatAreaRef?.scrollTop ?? 0;
+
+      renderLimit = Math.min(renderLimit + RENDER_GROWTH_STEP, filteredTimeline.length);
+      await tick();
+      await yieldToMain();
+
+      if (anchorId && chatAreaRef) {
+        let after: HTMLElement | null = null;
+        try {
+          after = chatAreaRef.querySelector<HTMLElement>(
+            `[data-entry-id="${CSS.escape(anchorId)}"]`,
+          );
+        } catch {
+          after =
+            Array.from(chatAreaRef.querySelectorAll<HTMLElement>("[data-entry-id]")).find(
+              (el) => el.dataset.entryId === anchorId,
+            ) ?? null;
+        }
+        if (after) {
+          const afterTop = after.getBoundingClientRect().top;
+          // Suppress re-arm so the programmatic scrollTop write doesn't immediately
+          // rearm the observer — the sentinel may still be in view post-prepend.
+          _suppressLoadMoreRearm = true;
+          chatAreaRef.scrollTop = beforeScroll + (afterTop - beforeTop);
+          // Clear suppression after the scroll event has dispatched + been handled.
+          // yieldToMain has a 50ms timeout fallback so a backgrounded WebView with
+          // throttled rAF can't strand the suppression flag.
+          await yieldToMain();
+          _suppressLoadMoreRearm = false;
+        }
+      }
+    } finally {
+      loadingMore = false;
+    }
+
+    // IntersectionObserver only refires on state changes. If anchor compensation
+    // produced ~zero delta (collapsed/unmeasured entries above the viewport, or
+    // a stable layout where the prepended content all sits within rootMargin),
+    // the sentinel stays "still intersecting" with no new state to deliver — and
+    // the user-scroll re-arm path (handleChatScroll) never fires either because
+    // a same-value scrollTop write may dispatch no scroll event. Re-observing
+    // forces a fresh callback delivery: if the sentinel exited the viewport,
+    // the callback returns early; if still intersecting, it kicks off another
+    // batch, naturally terminating once `filteredTimeline.length <= renderLimit`
+    // or the sentinel exits.
+    if (_topObserver && topSentinel && filteredTimeline.length > renderLimit) {
+      loadMoreArmed = true;
+      _topObserver.unobserve(topSentinel);
+      _topObserver.observe(topSentinel);
+    }
+  }
+
+  /**
+   * Load a run and render its timeline progressively.
+   * Starts with the most recent `INITIAL_RENDER_LIMIT` entries; the top sentinel
+   * grows `renderLimit` as the user scrolls up.
+   */
+  async function loadRunProgressive(
+    id: string,
+    xtermRef?: { clear(): void; writeText(s: string): void },
+  ) {
+    toolFilter = null;
+    // Reset progressive state so a previous run's expanded renderLimit (e.g. after
+    // an anchor jump) doesn't leak into the new run.
+    renderLimit = INITIAL_RENDER_LIMIT;
+    loadingMore = false;
+    loadMoreArmed = true;
+    const gen = nextProgressiveGen();
+
+    // Capture scrollTo BEFORE loadRun — URL may change during async load
+    const scrollTo = $page.url.searchParams.get("scrollTo");
+
+    // Flag suppresses auto-scroll reset during loadRun (non-reactive, won't trigger effects)
+    if (scrollTo) _scrollToInFlight = true;
+
+    await store.loadRun(id, xtermRef);
+    if (id) folderCwdOverride = ""; // clear folder override when a real run loads
+
+    // Reload project data with the run's cwd
+    if (id && store.effectiveCwd) {
+      reloadProjectData(store.effectiveCwd);
+    }
+
+    // Cross-reference MCP servers with config disabled state
+    // (session_init event carries stale status from session start time)
+    if (store.mcpServers.length > 0) {
+      try {
+        const disabledNames = await api.getDisabledMcpServers();
+        if (disabledNames.length > 0) {
+          const disabledSet = new Set(disabledNames);
+          const patched = store.mcpServers.map((s) =>
+            disabledSet.has(s.name) && s.status !== "disabled" ? { ...s, status: "disabled" } : s,
+          );
+          if (patched.some((s, i) => s !== store.mcpServers[i])) {
+            store.updateMcpServers(patched);
+            dbg("chat", "patched MCP disabled state", { disabledNames });
+          }
+        }
+      } catch {
+        // non-critical, ignore
+      }
+    }
+
+    if (gen !== progressiveGen) return;
+    dbg("chat", "loadRun complete", {
+      timeline: filteredTimeline.length,
+      renderLimit,
+      gen,
+    });
+
+    if (scrollTo) {
+      await tick();
+      scrollToMessage(scrollTo);
+      _scrollToInFlight = false;
+      // Clean scrollTo from URL — safe because $effect depends on
+      // runId and hasResumeParam (primitives), not the full $page.url.
+      const clean = new URL($page.url);
+      clean.searchParams.delete("scrollTo");
+      replaceState(clean, {});
+    } else {
+      // Scroll to bottom after DOM update — ensures content-visibility triggers re-layout
+      await tick();
+      requestAnimationFrame(() => {
+        if (chatAreaRef) chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+      });
+    }
+  }
+
+  let welcomeVisible = $derived(
+    store.timeline.length === 0 && !store.streamingText && !store.run && store.phase !== "loading",
+  );
+
+  let inputBlockedByPermission = $derived(store.hasPendingPermission || store.hasElicitation);
+  let pendingToolPermissions = $derived(store.pendingToolPermissions);
+  let showPermissionPanel = $derived(pendingToolPermissions.length > 0 && store.sessionAlive);
+
+  /** Skill info for SkillSelector: merge preloaded details with session skill names. */
+  let skillItems = $derived.by(() => {
+    const detailMap = new Map(preloadedSkills.map((s) => [s.name, s]));
+    const names = store.availableSkills;
+    if (names.length > 0) {
+      return names.map((name) => ({
+        name,
+        description: detailMap.get(name)?.description ?? "",
+      }));
+    }
+    return preloadedSkills.map((s) => ({ name: s.name, description: s.description }));
+  });
+
+  /** Race guard for the runtime skills query (run can switch mid-flight). */
+  let codexSkillsGen = 0;
+  /** Source the live Codex agent's loaded skills via app-server `skills/list`. Gated to a live
+   *  Codex session — no session means no process to ask, so we clear and the picker stays hidden
+   *  (avoids offering skills we can't send). Runs once per (runId, sessionAlive) transition. */
+  $effect(() => {
+    const runId = store.run?.id;
+    const live = effectiveAgent === "codex" && store.sessionAlive && !!runId;
+    if (!live) {
+      if (codexRuntimeSkills.length > 0) codexRuntimeSkills = [];
+      return;
+    }
+    const gen = ++codexSkillsGen;
+    dbg("skills", "fetch runtime skills", { runId });
+    api
+      .listCodexSkillsRuntime(runId!)
+      .then((res) => {
+        if (gen !== codexSkillsGen) return; // run/session changed while in flight
+        // Flatten every cwd entry's enabled skills; only enabled ones can actually trigger.
+        const flat = res.data.flatMap((entry) =>
+          entry.skills
+            .filter((s) => s.enabled)
+            .map((s) => ({
+              name: s.name,
+              path: s.path,
+              description: s.shortDescription ?? s.description ?? "",
+            })),
+        );
+        codexRuntimeSkills = flat;
+        dbg("skills", "runtime skills loaded", { count: flat.length });
+      })
+      .catch((e) => dbgWarn("skills", "listCodexSkillsRuntime failed", e));
+  });
+
+  /** Upgrade the Codex model catalog from the live app-server session (control `model_list`),
+   *  which is authoritative for the running CLI. Falls back to the pre-session catalog
+   *  (loadCodexModels) when no live session. Runs once per (runId, sessionAlive) transition. */
+  $effect(() => {
+    const runId = store.run?.id;
+    const live = effectiveAgent === "codex" && store.sessionAlive && !!runId;
+    if (!live) return;
+    dbg("models", "live session up, refreshing codex catalog", { runId });
+    void loadCodexModelsLive(runId!);
+  });
+
+  // ── Per-turn usage annotations in timeline ──
+
+  let usageByTurn = $derived(new Map(store.turnUsages.map((tu) => [tu.turnIndex, tu])));
+
+  /** Prefix-sum of user message count across filteredTimeline (for progressive rendering offset). */
+  let userCountPrefix = $derived.by(() => {
+    const ft = filteredTimeline;
+    const arr = new Int32Array(ft.length + 1);
+    for (let i = 0; i < ft.length; i++) {
+      arr[i + 1] = arr[i] + (ft[i].kind === "user" ? 1 : 0);
+    }
+    return arr;
+  });
+
+  /** Map of visibleTimeline index → TurnUsage to show BEFORE this entry (turn boundary). */
+  let usageAnnotations = $derived.by(() => {
+    const map = new Map<number, TurnUsage>();
+    if (usageByTurn.size === 0) return map;
+    const vt = visibleTimeline;
+    const hidden = filteredTimeline.length - vt.length;
+    let userCount = userCountPrefix[hidden];
+    for (let i = 0; i < vt.length; i++) {
+      if (vt[i].kind === "user") {
+        if (userCount > 0) {
+          const tu = usageByTurn.get(userCount);
+          if (tu) map.set(i, tu);
+        }
+        userCount++;
+      }
+    }
+    return map;
+  });
+
+  /**
+   * Indices where a Claude turn starts (first tool after a user message).
+   * Used to render a "Claude" header before tool cards.
+   */
+  let claudeTurnStarts = $derived.by(() => {
+    const starts = new Set<number>();
+    const vt = visibleTimeline;
+    for (let i = 0; i < vt.length; i++) {
+      if (vt[i].kind !== "tool") continue;
+      if (burstHiddenIndices.has(i)) continue;
+      // Look back for the previous visible non-tool entry
+      for (let j = i - 1; j >= 0; j--) {
+        if (burstHiddenIndices.has(j)) continue;
+        if (vt[j].kind === "tool") continue;
+        if (vt[j].kind === "user") starts.add(i);
+        break;
+      }
+    }
+    return starts;
+  });
+
+  /** Usage for the last (current/latest) turn — shown after all entries. */
+  let lastTurnUsage = $derived.by(() => {
+    const userCount = filteredTimeline.filter((e) => e.kind === "user").length;
+    if (userCount === 0) return null;
+    return usageByTurn.get(userCount) ?? null;
+  });
+
+  // ── Fork overlay ──
+  let forkOverlay = $state<{
+    active: boolean;
+    sourceRunId: string;
+    startedAt: number;
+    error: string | null;
+  } | null>(null);
+  let forkElapsed = $state(0);
+
+  // ── Thinking timer + panel ──
+  let thinkingElapsed = $state(0);
+  let thinkingExpanded = $state(true);
+  let spinnerVerb = $state(randomSpinnerVerb());
+  /** Plain flag (not $state) — avoids $effect dependency cycle with thinkingElapsed. */
+  let thinkingVerbPicked = false;
+  /** Debounced visibility — prevents spinner flash on fast CLI commands (/context, /cost). */
+  let thinkingVisible = $state(false);
+
+  /** Slash command processing indicator — shown before thinkingVisible kicks in. */
+  let processingSlashCmd = $state<string | null>(null);
+  let slashCmdSeenRunning = $state(false);
+
+  $effect(() => {
+    if (!processingSlashCmd) return;
+    // Track: phase was "running" at some point since flag was set
+    if (store.isRunning) slashCmdSeenRunning = true;
+    // Clear when content arrives, error set, or turn completed (idle after running)
+    if (
+      store.streamingText ||
+      store.thinkingText ||
+      store.error ||
+      store.phase === "failed" ||
+      store.phase === "completed" ||
+      store.phase === "stopped" ||
+      (slashCmdSeenRunning && store.phase === "idle")
+    ) {
+      processingSlashCmd = null;
+      slashCmdSeenRunning = false;
+    }
+  });
+
+  $effect(() => {
+    if (store.isThinking) {
+      // Use store.thinkingStartMs as the authoritative start time.
+      // During replay it holds the original event timestamp, so the timer
+      // survives session switches without resetting to 0.
+      const base = store.thinkingStartMs || Date.now();
+      if (!thinkingVerbPicked) {
+        spinnerVerb = randomSpinnerVerb();
+        thinkingVerbPicked = true;
+      }
+      // Debounce: only show spinner after 300ms to avoid flash on fast commands
+      const showTimer = setTimeout(() => {
+        thinkingVisible = true;
+      }, 300);
+      // Immediately compute elapsed (don't wait 1s for first update)
+      thinkingElapsed = Math.max(0, Math.floor((Date.now() - base) / 1000));
+      const interval = setInterval(() => {
+        thinkingElapsed = Math.max(0, Math.floor((Date.now() - base) / 1000));
+      }, 1000);
+      return () => {
+        clearTimeout(showTimer);
+        clearInterval(interval);
+      };
+    } else {
+      thinkingElapsed = 0;
+      thinkingVisible = false;
+      thinkingVerbPicked = false;
+    }
+  });
+
+  // Fork overlay timer: tick elapsed seconds while active
+  $effect(() => {
+    if (forkOverlay?.active && !forkOverlay.error) {
+      const interval = setInterval(() => {
+        forkElapsed = Math.floor((Date.now() - forkOverlay!.startedAt) / 1000);
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      forkElapsed = 0;
+    }
+  });
+
+  // Fork overlay phase watcher: show error on failure during step 1 (fork_oneshot).
+  // Overlay is dismissed explicitly by handleResume after step 1 succeeds.
+  // Guard `!forkOverlay.error`: only set error once to prevent infinite $effect loop —
+  // writing `forkOverlay = { ...spread }` creates a new object ref that re-triggers the effect.
+  $effect(() => {
+    if (!forkOverlay?.active) return;
+    const phase = store.phase;
+    if ((phase === "failed" || phase === "stopped") && !forkOverlay.error) {
+      forkOverlay = { ...forkOverlay, error: store.error || t("chat_forkFailedFallback") };
+    }
+  });
+
+  // Task notification: auto-show and dismiss after 5s
+  $effect(() => {
+    const notifications = store.taskNotifications;
+    if (notifications.size === 0) return;
+    const latest = Array.from(notifications.values()).pop();
+    if (!latest) return;
+    latestNotification = { task_id: latest.task_id, status: latest.status };
+    notificationVisible = true;
+    const timer = setTimeout(() => {
+      notificationVisible = false;
+    }, 5000);
+    return () => clearTimeout(timer);
+  });
+
+  function formatElapsed(seconds: number): string {
+    if (seconds < 60) return `${seconds}s`;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  // ── URL-derived (primitive values only — avoids $effect re-trigger on unrelated URL changes) ──
+  let runId = $derived($page.url.searchParams.get("run") ?? "");
+  let hasResumeParam = $derived($page.url.searchParams.has("resume"));
+  let folderParam = $derived($page.url.searchParams.get("folder"));
+  let hostParam = $derived($page.url.searchParams.get("host"));
+  let agentParam = $derived($page.url.searchParams.get("agent"));
+
+  // Consume ?agent= param: switch agent for new sessions, then clean URL
+  $effect(() => {
+    const a = agentParam;
+    if (!a) return;
+    untrack(() => {
+      const clean = new URL($page.url);
+      clean.searchParams.delete("agent");
+      replaceState(clean, {});
+      // ?agent= only applies to new sessions — ignore when loading an existing run
+      if (!runId && isKnownAgent(a)) {
+        handleAgentChange(a, true); // force=true to run full side effects
+      }
+    });
+  });
+
+  // Consume ?folder= and/or ?host= params: switch target/folder, then clean URL.
+  $effect(() => {
+    const folder = folderParam;
+    const host = hostParam;
+    if (!folder && !host) return;
+    untrack(() => {
+      dbg("chat", "url params", { folder, host });
+      // Validate non-empty host against currently loaded settings. If `remoteHosts`
+      // hasn't loaded yet (this effect can fire before onMount finishes settings
+      // fetch), fall back to optimistic acceptance — the backend surfaces a
+      // "Remote host '...' not found" error if the name is genuinely bogus.
+      let resolvedHost: string | null = null;
+      if (host !== null) {
+        if (host === "") {
+          resolvedHost = null; // explicit clear
+        } else if (remoteHosts.length === 0 || remoteHosts.some((h) => h.name === host)) {
+          resolvedHost = host;
+        } else {
+          dbgWarn("chat", "URL ?host= references unknown remote — ignoring", { host });
+          resolvedHost = null;
+        }
+        store.remoteHostName = resolvedHost;
+        setLastTarget(resolvedHost);
+      }
+      if (folder) {
+        if (resolvedHost) {
+          setStoredRemoteCwd(resolvedHost, folder);
+        } else {
+          try {
+            localStorage.setItem("ocv:project-cwd", folder);
+          } catch {
+            // localStorage may fail in restricted contexts
+          }
+        }
+        folderCwdOverride = folder;
+        store.loadRun("", xtermRef);
+      }
+      const clean = new URL($page.url);
+      clean.searchParams.delete("folder");
+      clean.searchParams.delete("host");
+      replaceState(clean, {});
+      requestAnimationFrame(() => promptRef?.focus());
+    });
+  });
+
+  // ── Computed (thin wrappers for template convenience) ──
+  let sending = $derived(store.phase === "spawning");
+
+  // Example prompts for empty state
+  const examplePrompts = [
+    () => t("chat_examplePrompt1"),
+    () => t("chat_examplePrompt2"),
+    () => t("chat_examplePrompt3"),
+  ];
+
+  // ── Lifecycle ──
+
+  // Load settings
+  onMount(async () => {
+    try {
+      settings = await api.getUserSettings();
+      store.authMode = settings.auth_mode ?? "cli";
+      // Fresh session: honor the user's default agent (composer pre-selects it). Existing
+      // runs are unaffected — loadRun sets store.agent from the run's own agent.
+      if (!runId && !store.run) {
+        store.agent = settings.default_agent === "codex" ? "codex" : "claude";
+      }
+      remoteHosts = settings.remote_hosts ?? [];
+      // Restore last target selection (must validate against current settings — a
+      // configured host may have been removed since the value was persisted).
+      if (!store.run && remoteHosts.length > 0) {
+        const lastTarget = getLastTarget();
+        if (lastTarget && remoteHosts.some((h) => h.name === lastTarget)) {
+          store.remoteHostName = lastTarget;
+        }
+      }
+      // Initialize per-session platform from global active
+      // Only use active_platform_id in App API Key mode; CLI Auth manages its own connection
+      if (!store.platformId) {
+        store.platformId =
+          settings.auth_mode === "api" ? (settings.active_platform_id ?? "anthropic") : "anthropic";
+      }
+      // Initialize model: for third-party platforms, use credential > preset default model
+      // Only for new sessions — if runId is set, loadRun will handle model restoration.
+      if (!store.model && !runId && store.phase !== "loading" && store.useStreamSession) {
+        const initCred = findCredential(
+          settings.platform_credentials ?? [],
+          store.platformId ?? "",
+        );
+        const initPreset = PLATFORM_PRESETS.find((p) => p.id === store.platformId);
+        const initModels = initCred?.models?.length ? initCred.models : initPreset?.models;
+        if (store.platformId !== "anthropic" && initModels?.[0]) {
+          store.model = initModels[0];
+        } else if (store.platformId === "anthropic" && settings.default_model) {
+          // default_model is global — only valid for Anthropic native platform.
+          // Third-party platforms without a models list leave model unset.
+          store.model = settings.default_model;
+        }
+      }
+      // Load auth overview for AuthSourceBadge
+      api
+        .getAuthOverview()
+        .then((ov) => (authOverview = ov))
+        .catch(() => {});
+      // Detect local proxy statuses for AuthSourceBadge
+      checkAllLocalProxies();
+    } catch (e) {
+      dbgWarn("chat", "failed to load settings:", e);
+    }
+    // When a valid ?agent= param exists, handleAgentChange(force) will handle
+    // agentSettings + effort loading. Skip here to avoid concurrent overwrites.
+    const hasValidAgentParam = agentParam && isKnownAgent(agentParam);
+    if (!hasValidAgentParam) {
+      try {
+        agentSettings = await api.getAgentSettings(store.agent);
+        if (store.agent === "codex") {
+          // Codex: agent settings ARE the source of truth (injected as
+          // -c model_reasoning_effort at spawn). Do NOT run the Claude migration below.
+          // Default to "medium" (Codex's own default reasoning effort) when unset so the
+          // effort selector always shows a highlighted value.
+          currentEffort = agentSettings?.effort || "medium";
+        } else {
+          // Claude: read effort from CLI config (~/.claude/settings.json) — the authoritative
+          // source. NOT from agentSettings.effort (that would cause --effort flag at spawn,
+          // which locks effort in memory and prevents live switching via settings.json).
+          try {
+            const cliCfg = await api.getCliConfig();
+            const cliEffort = cliCfg.effortLevel;
+            currentEffort = typeof cliEffort === "string" && cliEffort ? cliEffort : "";
+          } catch {
+            currentEffort = "";
+          }
+          // One-time migration: clear stale agentSettings.effort to prevent --effort at spawn
+          if (agentSettings?.effort) {
+            api.updateAgentSettings(store.agent, { effort: "" }).catch(() => {});
+          }
+        }
+      } catch (e) {
+        dbgWarn("chat", "failed to load agent settings:", e);
+      }
+    }
+    // Initialize permission mode from saved settings (before session_init arrives).
+    // Uses syncPermissionModeFromSettings helper — does NOT set permissionModeSetByUser.
+    // That flag is only set by handlePermissionModeChange() (user manual action).
+    syncPermissionModeFromSettings(agentSettings, settings);
+    // Find most recent run with session_id for "Continue last session"
+    try {
+      const runs = await api.listRuns();
+      lastContinuableRun =
+        runs.find(
+          (r) =>
+            r.session_id &&
+            (r.status === "completed" || r.status === "stopped" || r.status === "failed"),
+        ) ?? null;
+    } catch (e) {
+      dbgWarn("chat", "failed to load runs for continue:", e);
+    }
+    let selfHealDone = false;
+    let selfHealInFlight = false;
+    // Codex model catalog (live from app-server). Fire-and-forget; 5min TTL cache.
+    void loadCodexModels();
+    loadCliInfo().then(() => {
+      // Self-heal: detect and fix contaminated default_model
+      if (settings?.default_model && !selfHealDone && !selfHealInFlight) {
+        const dm = settings.default_model;
+        const contaminated = isContaminatedDefaultModel(dm);
+        if (contaminated === true) {
+          const healModel = getCliCurrentModel();
+          if (healModel) {
+            selfHealInFlight = true;
+            dbg("chat", "self-heal: default_model contaminated, persisting fix", {
+              old: dm,
+              new: healModel,
+            });
+            api
+              .updateUserSettings({ default_model: healModel })
+              .then(() => {
+                settings!.default_model = healModel;
+                lastKnownGoodAnthropicModel = healModel;
+                selfHealDone = true;
+                dbg("chat", "self-heal: persist succeeded");
+              })
+              .catch((e) => {
+                dbgWarn("chat", "self-heal persist failed, will retry next loadCliInfo", e);
+              })
+              .finally(() => {
+                selfHealInFlight = false;
+              });
+          } else {
+            dbg("chat", "self-heal: contaminated but CLI model unavailable, deferring", { dm });
+          }
+        } else if (contaminated === false) {
+          selfHealDone = true;
+        }
+      }
+
+      const cliModel = getCliCurrentModel();
+      const isThirdParty = store.platformId && store.platformId !== "anthropic";
+      // Update lastKnownGoodAnthropicModel when CLI model is available
+      if (cliModel && !isThirdParty) {
+        lastKnownGoodAnthropicModel = cliModel;
+      }
+      // Only for genuinely new chats: no run loaded/loading, no URL run param
+      if (
+        cliModel &&
+        !store.run &&
+        !runId &&
+        store.phase !== "loading" &&
+        !isThirdParty &&
+        store.useStreamSession
+      ) {
+        dbg("chat", "set model from CLI after loadCliInfo", { cliModel, prev: store.model });
+        store.model = cliModel;
+      }
+    });
+    loadCliVersionInfo();
+    checkProjectInit();
+    // Preload project data from filesystem (no session needed)
+    if (!runId) {
+      const cwd = localStorage.getItem("ocv:project-cwd") || "";
+      reloadProjectData(cwd);
+    }
+  });
+
+  // Listen for project folder changes to re-check project init + reload project data
+  onMount(() => {
+    const handler = () => {
+      checkProjectInit();
+      if (!runId && !store.run) {
+        const cwd = localStorage.getItem("ocv:project-cwd") || "";
+        reloadProjectData(cwd);
+      }
+    };
+    window.addEventListener("ocv:project-changed", handler);
+    return () => window.removeEventListener("ocv:project-changed", handler);
+  });
+
+  // Warm up file IPC chain: validate_file_path's first invocation walks several
+  // canonicalize() calls (data dir, claude dir, agents' working dirs, project cwd).
+  // Firing one stat at chat-page mount primes the OS FS cache so the user's first
+  // file click doesn't pay the cold-cache cost.
+  onMount(() => {
+    const cwd = localStorage.getItem("ocv:project-cwd") || "";
+    if (!cwd) return;
+    const t0 = performance.now();
+    api
+      .statTextFile(cwd, cwd)
+      .then(() => dbg("file-ipc", "warmup done", { ms: +(performance.now() - t0).toFixed(0) }))
+      .catch((e) =>
+        dbg("file-ipc", "warmup err (still warmed)", {
+          ms: +(performance.now() - t0).toFixed(0),
+          err: String(e),
+        }),
+      );
+  });
+
+  // Sync run name when sidebar/history renames the current run
+  onMount(() => {
+    function onRunsChanged() {
+      if (!store.run) return;
+      const id = store.run.id;
+      api
+        .getRun(id)
+        .then((fresh) => {
+          if (fresh && store.run?.id === id && fresh.name !== store.run.name) {
+            dbg("chat", "runs-changed: syncing name", { id, name: fresh.name });
+            store.run = { ...store.run, name: fresh.name ?? undefined };
+            if (fresh.name) autoNameDone = true;
+          }
+        })
+        .catch((e) => {
+          dbgWarn("chat", "runs-changed: failed to sync name", e);
+        });
+    }
+    window.addEventListener("ocv:runs-changed", onRunsChanged);
+    return () => window.removeEventListener("ocv:runs-changed", onRunsChanged);
+  });
+
+  // Start middleware + register handlers
+  onMount(() => {
+    let destroyed = false;
+    (async () => {
+      try {
+        await middleware.start();
+      } catch (e) {
+        console.error("[chat] middleware.start() failed:", e);
+        store.error = t("chat_eventSystemFailed");
+      }
+      if (!destroyed) middlewareReady = true;
+    })();
+
+    // Pipe handler: chat-delta / chat-done (Codex pipe mode)
+    middleware.setPipeHandler({
+      onDelta(delta) {
+        store.handleChatDelta(delta.text, xtermRef);
+      },
+      onDone(done) {
+        store.handleChatDone(done);
+      },
+    });
+
+    // Run event handler: stderr for Codex pipe mode
+    middleware.setRunEventHandler({
+      onRunEvent(event) {
+        if (
+          store.run?.execution_path === "pipe_exec" &&
+          event.run_id === store.run.id &&
+          xtermRef
+        ) {
+          if (event.type === "stderr") {
+            xtermRef.writeText(`\x1b[31m${event.text}\x1b[0m\r\n`);
+          }
+        }
+      },
+    });
+
+    return () => {
+      destroyed = true;
+      // Kill fork run process on unmount (but not the source run)
+      if (forkOverlay?.active && store.run && store.run.id !== forkOverlay.sourceRunId) {
+        api.stopSession(store.run.id).catch(() => {});
+      }
+      store.unmountGuards();
+      middleware.destroy();
+    };
+  });
+
+  // Watch runId changes → load run + subscribe middleware
+  // Gated on middlewareReady to ensure listeners are registered before subscribing
+  $effect(() => {
+    if (!middlewareReady) return;
+    const id = runId;
+    const hasResume = hasResumeParam;
+    untrack(() => {
+      middleware.subscribeCurrent(id, store);
+
+      // Strongest guard: resume operation in progress — don't interfere.
+      // Check both store guard (set inside resumeSession) and local flag
+      // (set at handleResume entry, before store guard is acquired).
+      if (store.resumeInFlight || resuming) {
+        dbg("effect", "skip loadRun — resume in progress");
+        return;
+      }
+      // Resume $effect will handle this case
+      if (hasResume) return;
+
+      if (!id) {
+        store.loadRun("", xtermRef);
+        cancelProgressive(); // empty run — no progressive needed
+        return;
+      }
+
+      // If store already holds an active session for this run, skip redundant loadRun
+      if (store.run?.id === id && store.sessionAlive) {
+        dbg("effect", "skip loadRun — session already alive for", id);
+        const scrollTo = $page.url.searchParams.get("scrollTo");
+        if (scrollTo) {
+          const clean = new URL($page.url);
+          clean.searchParams.delete("scrollTo");
+          replaceState(clean, {});
+          tick().then(() => scrollToMessage(scrollTo));
+        }
+        return;
+      }
+
+      loadRunProgressive(id, xtermRef);
+    });
+  });
+
+  // Handle scrollTo for already-loaded runs (e.g., clicking a second search result
+  // in the same run). The runId effect above won't re-fire when only scrollTo changes.
+  $effect(() => {
+    if (!middlewareReady) return;
+    const scrollTo = $page.url.searchParams.get("scrollTo");
+    if (!scrollTo) return;
+    untrack(() => {
+      // loadRunProgressive handles scrollTo during run loading — don't double-scroll
+      if (_scrollToInFlight) return;
+      if (store.phase === "loading") return;
+      if (store.run?.id !== runId) return;
+
+      dbg("effect", "same-run scrollTo", { scrollTo, runId });
+      _scrollToInFlight = true;
+      const clean = new URL($page.url);
+      clean.searchParams.delete("scrollTo");
+      replaceState(clean, {});
+      tick().then(() => {
+        scrollToMessage(scrollTo);
+        _scrollToInFlight = false;
+      });
+    });
+  });
+
+  // Consume ?resume= URL param for session resume via sidebar button
+  $effect(() => {
+    const url = $page.url;
+    const paramRunId = url.searchParams.get("run");
+    const resumeMode = url.searchParams.get("resume") as SessionMode | null;
+
+    if (paramRunId && resumeMode) {
+      // Clean URL immediately to prevent re-trigger on refresh
+      const clean = new URL(url);
+      clean.searchParams.delete("resume");
+      replaceState(clean, {});
+
+      untrack(() => {
+        handleResume(resumeMode, paramRunId);
+      });
+    }
+  });
+
+  // Auto-focus prompt input on mount + listen for status bar toggle + register chat keybindings
+  onMount(() => {
+    requestAnimationFrame(() => promptRef?.focus());
+    function onStatusBarToggle(e: Event) {
+      statusBarExpanded = (e as CustomEvent).detail.expanded;
+    }
+    window.addEventListener("ocv:statusbar-toggle", onStatusBarToggle);
+
+    // Register chat-context keybinding callbacks
+    keybindingStore.registerCallback("chat:interrupt", () => {
+      if (shortcutHelpOpen) {
+        shortcutHelpOpen = false;
+        return;
+      }
+      if (store.isRunning) {
+        store.interrupt();
+      }
+    });
+    keybindingStore.registerCallback("chat:sendGlobal", () => {
+      if (!store.isRunning) {
+        promptRef?.triggerSend();
+      }
+    });
+    keybindingStore.registerCallback("app:shortcutHelp", () => {
+      shortcutHelpOpen = !shortcutHelpOpen;
+    });
+    keybindingStore.registerCallback("app:modelPicker", () => {
+      statusBarRef?.openModelDropdown();
+    });
+    keybindingStore.registerCallback("chat:cyclePermission", () => {
+      // Guard: if focus is on a focusable interactive control, don't cycle (preserve Shift+Tab navigation)
+      const active = document.activeElement;
+      if (active && active !== document.body) {
+        const el = active as HTMLElement;
+        const isFocusable =
+          el.tagName === "BUTTON" ||
+          el.tagName === "SELECT" ||
+          el.tagName === "A" ||
+          (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1") ||
+          el.closest("[role='menu']") ||
+          el.closest("[role='listbox']") ||
+          el.closest("[role='dialog']") ||
+          (el.hasAttribute("role") &&
+            ["button", "link", "menuitem", "option", "tab"].includes(
+              el.getAttribute("role") ?? "",
+            ));
+        if (isFocusable) return;
+      }
+      const modes = ["default", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"];
+      const idx = modes.indexOf(store.permissionMode);
+      const next = modes[(idx + 1) % modes.length];
+      handlePermissionModeChange(next);
+    });
+    keybindingStore.registerCallback("chat:stashPrompt", () => {
+      if (stashedInput) {
+        promptRef?.restoreSnapshot(stashedInput);
+        stashedInput = null;
+        showChatToast(t("toast_stashRestored"));
+      } else {
+        const snapshot = promptRef?.getInputSnapshot();
+        if (
+          snapshot &&
+          (snapshot.text.trim() ||
+            snapshot.attachments.length ||
+            snapshot.pastedBlocks.length ||
+            (snapshot.pathRefs?.length ?? 0) > 0)
+        ) {
+          stashedInput = snapshot;
+          promptRef?.clearAll();
+          showChatToast(t("toast_stashSaved"));
+        }
+      }
+    });
+    keybindingStore.registerCallback("app:toggleFastMode", () => {
+      toggleCliConfigBool("fastMode");
+    });
+    keybindingStore.registerCallback("chat:toggleVerbose", () => {
+      toggleCliConfigBool("verbose");
+    });
+    keybindingStore.registerCallback("chat:toggleTasks", () => {
+      if (store.hasBackgroundTasks) {
+        if (sidebarCollapsed) sidebarCollapsed = false;
+        sidebarRequestedTab = "tasks";
+      }
+    });
+    keybindingStore.registerCallback("chat:undoLastTurn", () => {
+      handleRewind();
+    });
+    keybindingStore.registerCallback("app:exportChatHtml", () => void handleExportHtml());
+    const onExportHtmlEvent = () => {
+      window.dispatchEvent(new CustomEvent("ocv:export-html-ack"));
+      void handleExportHtml();
+    };
+    window.addEventListener("ocv:export-html", onExportHtmlEvent);
+
+    // Screenshot event listener (global hotkey → attachment injection)
+    const chatTransport = getTransport();
+    const screenshotUnlisten = chatTransport.listen<ScreenshotPayload>(
+      "screenshot-taken",
+      (payload) => {
+        dbg("chat", "screenshot-taken", { filename: payload.filename });
+        const { contentBase64, mediaType, filename } = payload;
+        const bytes = Uint8Array.from(atob(contentBase64), (c) => c.charCodeAt(0));
+        const file = new File([bytes], filename, { type: mediaType });
+        promptRef?.addFiles([file]);
+      },
+    );
+
+    // Tauri native drag-drop listeners (dragDropEnabled: true in tauri.conf.json)
+    const dragEnterUnlisten = chatTransport.listen<{ paths: string[] }>(
+      "tauri://drag-enter",
+      () => {
+        pageDragActive = true;
+      },
+    );
+    const dragLeaveUnlisten = chatTransport.listen("tauri://drag-leave", () => {
+      pageDragActive = false;
+    });
+    const dragDropUnlisten = chatTransport.listen<{ paths: string[] }>(
+      "tauri://drag-drop",
+      handleTauriDrop,
+    );
+
+    // Preview window event listeners
+    const previewSelectionUnlisten = chatTransport.listen<{
+      instanceId: string;
+      data: unknown;
+    }>("preview-element-selected", (payload) => {
+      if (payload.instanceId !== previewInstanceId) {
+        dbgWarn("preview", "ignoring selection from stale instance", payload.instanceId);
+        return;
+      }
+      if (!isElementSelection(payload.data)) {
+        dbgWarn("preview", "invalid element payload", payload.data);
+        return;
+      }
+      dbg("preview", "elementSelected", {
+        domPath: payload.data.domPath,
+        tagName: payload.data.tagName,
+      });
+      // Insert directly to chat and bring main window to front
+      promptRef?.appendText(formatElementContext(payload.data));
+      window.focus();
+    });
+
+    const previewClosedUnlisten = chatTransport.listen<{ instanceId: string }>(
+      "preview-window-closed",
+      (payload) => {
+        if (payload.instanceId !== previewInstanceId) return;
+        dbg("preview", "windowClosed", { instanceId: payload.instanceId });
+        resetPreviewState();
+      },
+    );
+
+    return () => {
+      window.removeEventListener("ocv:statusbar-toggle", onStatusBarToggle);
+      keybindingStore.unregisterCallback("chat:interrupt");
+      keybindingStore.unregisterCallback("chat:sendGlobal");
+      keybindingStore.unregisterCallback("app:shortcutHelp");
+      keybindingStore.unregisterCallback("app:modelPicker");
+      keybindingStore.unregisterCallback("chat:cyclePermission");
+      keybindingStore.unregisterCallback("chat:stashPrompt");
+      keybindingStore.unregisterCallback("app:toggleFastMode");
+      keybindingStore.unregisterCallback("chat:toggleVerbose");
+      keybindingStore.unregisterCallback("chat:toggleTasks");
+      keybindingStore.unregisterCallback("chat:undoLastTurn");
+      keybindingStore.unregisterCallback("app:exportChatHtml");
+      window.removeEventListener("ocv:export-html", onExportHtmlEvent);
+      screenshotUnlisten.then((fn) => fn());
+      dragEnterUnlisten.then((fn) => fn());
+      dragLeaveUnlisten.then((fn) => fn());
+      dragDropUnlisten.then((fn) => fn());
+      previewSelectionUnlisten.then((fn) => fn());
+      previewClosedUnlisten.then((fn) => fn());
+      // Clean up verbose retry timer
+      if (verboseRetryTimer) clearTimeout(verboseRetryTimer);
+      // Clean up progressive rendering timer
+      cancelProgressive();
+    };
+  });
+
+  // Listen for auto-context snapshots from Rust backend
+  onMount(() => {
+    const unlisten = getTransport().listen<{
+      runId: string;
+      content: string;
+      turnIndex: number;
+      ts: string;
+    }>("context-snapshot", (payload) => {
+      const { runId, content, turnIndex, ts } = payload;
+      dbg("chat", "context-snapshot-recv", { runId, turnIndex, len: content.length });
+      if (runId !== store.run?.id) return;
+      const data = parseContextMarkdown(content);
+      if (!data) {
+        dbgWarn("chat", "context-parse-failed", {
+          runId,
+          turnIndex,
+          head: content.slice(0, 200),
+        });
+        return;
+      }
+      // Upsert by turnIndex: same turn overwrites (not appends)
+      const prev = contextHistoryMap.get(runId) ?? [];
+      const existingIdx = prev.findIndex((s) => s.turnIndex === turnIndex);
+      const replaced = existingIdx >= 0;
+      const updated = replaced
+        ? prev.map((s, i) => (i === existingIdx ? { runId, turnIndex, ts, data } : s))
+        : [...prev, { runId, turnIndex, ts, data }];
+      contextHistoryMap.set(runId, updated);
+      contextHistoryMap = new Map(contextHistoryMap); // trigger reactivity
+      dbg("chat", "context-snapshot", { turn: turnIndex, pct: data.percentage, replaced });
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  });
+
+  // ── BTW event listeners ──
+  // NOTE: Don't filter by btw_id — events may arrive before the IPC call returns
+  // the btw_id (race condition). Only one BTW is active at a time, so checking
+  // btwState.active is sufficient.
+  onMount(() => {
+    const transport = getTransport();
+    const deltaUnlisten = transport.listen<import("$lib/types").BtwDelta>("btw-delta", (ev) => {
+      if (btwState.active) {
+        dbg("chat", "btw-delta", { len: ev.text.length });
+        btwState.answer += ev.text;
+      }
+    });
+    const completeUnlisten = transport.listen<import("$lib/types").BtwComplete>(
+      "btw-complete",
+      (ev) => {
+        if (btwState.active) {
+          dbg("chat", "btw-complete", { btwId: ev.btw_id });
+          btwState.loading = false;
+        }
+      },
+    );
+    const errorUnlisten = transport.listen<import("$lib/types").BtwError>("btw-error", (ev) => {
+      if (btwState.active) {
+        dbgWarn("chat", "btw-error", { error: ev.error });
+        btwState.error = ev.error;
+        btwState.loading = false;
+      }
+    });
+    return () => {
+      deltaUnlisten.then((f) => f());
+      completeUnlisten.then((f) => f());
+      errorUnlisten.then((f) => f());
+    };
+  });
+
+  // Auto-scroll chat (only when user is near bottom)
+  let prevTl = 0;
+  let prevSt = 0;
+
+  $effect(() => {
+    if (store.useStreamSession && chatAreaRef) {
+      const tl = store.timeline.length;
+      const st = store.streamingText.length;
+      const _rid = store.run?.id;
+      const changed = tl !== prevTl || st !== prevSt;
+      prevTl = tl;
+      prevSt = st;
+      if (isChatAutoScroll) {
+        requestAnimationFrame(() => {
+          if (chatAreaRef) chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+        });
+      } else if (changed) {
+        showChatScrollHint = true;
+      }
+    }
+  });
+
+  // Reset scroll state on run change
+  $effect(() => {
+    void store.run?.id;
+    // _scrollToInFlight is non-reactive (plain let): reading it doesn't create a dependency.
+    // When a search scroll-to navigation is in progress, suppress auto-scroll so
+    // scrollToMessage isn't overridden by the auto-scroll $effect.
+    isChatAutoScroll = !_scrollToInFlight;
+    showChatScrollHint = false;
+    prevTl = 0;
+    prevSt = 0;
+  });
+
+  // Restore model when store.model is empty (e.g. after reset/loadRun):
+  // For third-party platforms, use the platform's default model.
+  // For Anthropic, prefer CC's current active model, fall back to our saved default_model
+  // (only if confirmed clean via three-state contamination check).
+  $effect(() => {
+    if (!store.model && store.useStreamSession) {
+      // Don't overwrite model during loadRun async gap — loadRun will set it
+      if (store.phase === "loading") return;
+
+      const isThirdParty = store.platformId && store.platformId !== "anthropic";
+      if (isThirdParty) {
+        const restoreCred = findCredential(
+          settings?.platform_credentials ?? [],
+          store.platformId ?? "",
+        );
+        const restorePreset = PLATFORM_PRESETS.find((p) => p.id === store.platformId);
+        const restoreModels = restoreCred?.models?.length
+          ? restoreCred.models
+          : restorePreset?.models;
+        if (restoreModels?.[0]) {
+          dbg("chat", "restore model from credential/preset", {
+            platform: store.platformId,
+            model: restoreModels[0],
+          });
+          store.model = restoreModels[0];
+          return;
+        }
+      }
+      // Only fall back to default_model for Anthropic platform — otherwise
+      // default_model may belong to a different platform (cross-pollution).
+      const cliModel = getCliCurrentModel();
+      const isAnthropicPlatform = !store.platformId || store.platformId === "anthropic";
+      const rawFallback = isAnthropicPlatform ? settings?.default_model : undefined;
+      const contaminated = rawFallback ? isContaminatedDefaultModel(rawFallback) : null;
+      // Only use default_model when confirmed clean (false). true/null → skip.
+      const fallback = contaminated === false ? rawFallback : undefined;
+      // Last resort: cached last-known-good Anthropic model (only for Anthropic platform)
+      const model =
+        cliModel || fallback || (isAnthropicPlatform ? lastKnownGoodAnthropicModel : undefined);
+      if (model) {
+        // Update cache when we have a trusted source
+        if (isAnthropicPlatform && (cliModel || contaminated === false)) {
+          lastKnownGoodAnthropicModel = model;
+        }
+        dbg("chat", "restore model", {
+          cliModel,
+          rawFallback,
+          contaminated,
+          lastKnownGood: lastKnownGoodAnthropicModel,
+          using: model,
+        });
+        store.model = model;
+      }
+    }
+  });
+
+  // ── Terminal helpers ──
+
+  function handleTermReady(_cols: number, _rows: number) {
+    // Terminal ready — Codex pipe mode is output-only, no setup needed
+  }
+
+  function handleTermResize(_cols: number, _rows: number) {
+    // Codex pipe mode doesn't need resize — terminal is output-only
+  }
+
+  // ── Chat scroll ──
+
+  /** Threshold (px) for "near bottom" detection. Shared concept with TerminalPane. */
+  const SCROLL_BOTTOM_THRESHOLD = 40;
+
+  function handleChatScroll() {
+    if (!chatAreaRef) return;
+    const dist = chatAreaRef.scrollHeight - chatAreaRef.scrollTop - chatAreaRef.clientHeight;
+    isChatAutoScroll = dist < SCROLL_BOTTOM_THRESHOLD;
+    if (isChatAutoScroll) showChatScrollHint = false;
+    // Re-arm progressive load-more after a user-initiated scroll. The IntersectionObserver
+    // fires once per arm; this prevents short timelines from runaway-expanding while the
+    // sentinel remains in view after a prepend. Programmatic scrollTop adjustments
+    // (loadMoreEarlier's anchor compensation) raise `_suppressLoadMoreRearm` so the
+    // anchor-correction scroll doesn't immediately re-arm the observer.
+    if (!loadMoreArmed && !_suppressLoadMoreRearm) loadMoreArmed = true;
+  }
+
+  function scrollChatToBottom() {
+    if (chatAreaRef) {
+      chatAreaRef.scrollTop = chatAreaRef.scrollHeight;
+      showChatScrollHint = false;
+      isChatAutoScroll = true;
+    }
+  }
+
+  // ── Permission pending auto-scroll (only for inline AskUserQuestion/ExitPlanMode) ──
+  let prevPermissionRunId = "";
+  let prevHadPermission = false;
+
+  $effect(() => {
+    const runId = store.run?.id ?? "";
+    const hasInline = store.hasInlinePermission;
+
+    if (runId !== prevPermissionRunId) {
+      prevPermissionRunId = runId;
+      prevHadPermission = false;
+    }
+
+    if (hasInline && !prevHadPermission) {
+      if (!chatAreaRef) return;
+      requestAnimationFrame(() => {
+        scrollChatToBottom();
+      });
+      dbg("chat", "inline permission pending -> autoscroll", { runId });
+    }
+
+    prevHadPermission = hasInline;
+  });
+
+  // ── Permission panel visibility log ──
+  let _prevPanelCount = 0;
+  $effect(() => {
+    const count = pendingToolPermissions.length;
+    if (count !== _prevPanelCount) {
+      if (count > 0)
+        dbg("chat", "permissionPanel visible", {
+          count,
+          ids: pendingToolPermissions.map((p) => p.requestId),
+          tools: pendingToolPermissions.map((p) => p.tool.tool_name),
+        });
+      else if (_prevPanelCount > 0) dbg("chat", "permissionPanel hidden");
+      _prevPanelCount = count;
+    }
+  });
+
+  // ── Send message ──
+
+  async function sendMessage(
+    text: string,
+    attachments: Attachment[],
+    // Codex skill refs picked in the composer (live-Codex only). Forwarded to store.sendMessage,
+    // which threads them to the structured {type:"skill"} send. Empty for Claude / no-skill sends.
+    skills?: { name: string; path: string }[],
+  ) {
+    if (!text.trim()) return;
+
+    // The draft is being sent — drop it so it can't resurface. Esp. the "" new-chat bucket: its
+    // PromptInput remounts under the new run id before the clear effect flushes, so rely on this.
+    promptDraftsByRun.delete(store.run?.id ?? "");
+
+    store.error = "";
+    // Follow to new reply when sending a message
+    isChatAutoScroll = true;
+    showChatScrollHint = false;
+
+    // Detect slash command (same check as store timeout skip)
+    const isSlash = store.isKnownSlashCommand(text);
+    const slashCmd = isSlash ? (text.match(/^\/\S+/)?.[0] ?? null) : null;
+
+    try {
+      if (!store.run) {
+        // First message: create run.
+        //
+        // Validate the remote target up-front. The host could have been
+        // removed/renamed since the chat tab was opened (or since
+        // `ocv:last-target` was persisted). Without this check, every
+        // downstream path — `getStoredRemoteCwd`, the folder picker (which
+        // silently falls back to local UI when its `loadRemoteHosts` clears
+        // the unknown host), and `startSession` — would still run with the
+        // stale `store.remoteHostName`, and the backend `start_run` would
+        // fail with an opaque "Remote host '...' not found".
+        if (
+          store.remoteHostName &&
+          remoteHosts.length > 0 &&
+          !remoteHosts.some((h) => h.name === store.remoteHostName)
+        ) {
+          dbgWarn("chat", "remote host no longer in settings — clearing target", {
+            host: store.remoteHostName,
+          });
+          showChatToast(t("toast_remoteHostMissing"));
+          store.remoteHostName = null;
+          setLastTarget(null);
+          return;
+        }
+        const isRemote = !!store.remoteHostName;
+        let cwd = "";
+        if (typeof window !== "undefined") {
+          if (isRemote) {
+            cwd = getStoredRemoteCwd(store.remoteHostName!);
+          } else {
+            cwd =
+              localStorage.getItem("ocv:project-cwd") ||
+              localStorage.getItem("ocv:settings-cwd") ||
+              "";
+          }
+        }
+
+        if (!cwd || cwd === "/") {
+          if (isRemote) {
+            // Remote: open FolderPicker for the selected host
+            const result = await openFolderPicker({
+              initialHost: store.remoteHostName,
+              hideTargetSelector: true,
+            });
+            if (!result || !result.path) return; // cancelled
+            cwd = result.path;
+            if (result.hostName) setStoredRemoteCwd(result.hostName, cwd);
+          } else {
+            // Browser local: open FolderPicker (allows manual path or switching to remote)
+            const result = await openFolderPicker({ initialHost: null });
+            if (!result || !result.path) return;
+            cwd = result.path;
+            if (result.hostName) {
+              store.remoteHostName = result.hostName;
+              setLastTarget(result.hostName);
+              setStoredRemoteCwd(result.hostName, cwd);
+            } else {
+              localStorage.setItem("ocv:project-cwd", cwd);
+              window.dispatchEvent(new Event("ocv:cwd-changed"));
+            }
+          }
+        }
+
+        // Set indicator AFTER all early-return points
+        if (slashCmd) {
+          processingSlashCmd = slashCmd;
+          slashCmdSeenRunning = false;
+        }
+
+        const runId = await store.startSession(text, cwd, attachments);
+        goto(`/chat?run=${runId}`, { replaceState: true });
+        window.dispatchEvent(new Event("ocv:runs-changed"));
+        // Re-detect CLI version on new session (picks up external updates)
+        loadCliVersionInfo();
+      } else if (store.useStreamSession && !store.sessionAlive && store.run.session_id) {
+        // Stopped stream session: atomic resume + send (message written to CLI stdin at spawn)
+        dbg("chat", "auto-resume on send", {
+          runId: store.run.id,
+          sessionId: store.run.session_id,
+        });
+        // Make the silent recovery visible so users don't think they must click
+        // "Resume Session" first. (#115)
+        promptRef?.showToast(t("chat_restoringSession"), "info");
+        if (slashCmd) {
+          processingSlashCmd = slashCmd;
+          slashCmdSeenRunning = false;
+        }
+        await handleResume("resume", undefined, text, attachments);
+      } else {
+        // Subsequent message
+        if (slashCmd) {
+          processingSlashCmd = slashCmd;
+          slashCmdSeenRunning = false;
+        }
+        // A stopped Codex app-server session re-spawns inside sendMessage; refresh the
+        // sidebar afterward so its status badge leaves the stale "stopped" state.
+        const wasStoppedCodex =
+          store.useStreamSession && !store.sessionAlive && store.run?.agent === "codex";
+        await store.sendMessage(text, attachments, skills);
+        if (wasStoppedCodex) window.dispatchEvent(new Event("ocv:runs-changed"));
+        requestAnimationFrame(() => promptRef?.focus());
+      }
+    } catch (e) {
+      store.error = String(e);
+      processingSlashCmd = null;
+    }
+  }
+
+  function fillPrompt(text: string) {
+    promptRef?.setValue(text);
+  }
+
+  // ── Project init detection ──
+  // For Claude session: check CLAUDE.md; for Codex: check AGENTS.md.
+  // Hint only fires before a session starts (when `!store.run`), so `effectiveAgent`
+  // reflects the user's selected agent from settings.
+  let showInitHint = $derived(
+    projectInitStatus !== null &&
+      !store.run &&
+      (effectiveAgent === "codex"
+        ? !projectInitStatus.has_agents_md
+        : !projectInitStatus.has_claude_md),
+  );
+
+  /** Reload project-level data (skills, agents, commands) with race guard. */
+  function reloadProjectData(cwd: string) {
+    const gen = ++preloadGen;
+    preloadedSkills = [];
+    preloadedAgents = [];
+    projectCommands = [];
+    if (!cwd) return;
+    api
+      .listStandaloneSkills(cwd)
+      .then((skills) => {
+        if (gen !== preloadGen) return;
+        preloadedSkills = skills;
+        if (skills.length > 0 && store.availableSkills.length === 0) {
+          store.availableSkills = skills.map((s) => s.name);
+        }
+        dbg("chat", "preloaded skills", { count: skills.length });
+      })
+      .catch((e) => dbgWarn("chat", "failed to preload skills", e));
+    api
+      .listAgents(cwd)
+      .then((agents) => {
+        if (gen !== preloadGen) return;
+        preloadedAgents = agents;
+        dbg("chat", "preloaded agents", { count: agents.length });
+      })
+      .catch((e) => dbgWarn("chat", "failed to preload agents", e));
+    api
+      .listProjectCommands(cwd)
+      .then((cmds) => {
+        if (gen !== preloadGen) return;
+        projectCommands = cmds;
+        dbg("chat", "preloaded project commands", { count: cmds.length });
+      })
+      .catch((e) => dbgWarn("chat", "failed to preload project commands", e));
+  }
+
+  async function checkProjectInit() {
+    const cwd = localStorage.getItem("ocv:project-cwd") || "";
+    if (!cwd || cwd === "/") {
+      projectInitStatus = null;
+      dbg("chat", "checkProjectInit: skip (no cwd)");
+      return;
+    }
+    const seq = ++initCheckSeq;
+    try {
+      const status = await api.checkProjectInit(cwd);
+      dbg("chat", "checkProjectInit result", {
+        cwd,
+        status,
+        seq,
+        currentSeq: initCheckSeq,
+        hasRun: !!store.run,
+        isApiMode: store.isApiMode,
+      });
+      if (seq !== initCheckSeq) return;
+      const dismissKey = `ocv:init-dismissed:${status.cwd}`;
+      const dismissed = localStorage.getItem(dismissKey);
+      if (dismissed) {
+        projectInitStatus = null;
+        dbg("chat", "checkProjectInit: dismissed", dismissKey);
+        return;
+      }
+      projectInitStatus = status;
+    } catch (e) {
+      dbgWarn("chat", "checkProjectInit failed", e);
+      if (seq === initCheckSeq) projectInitStatus = null;
+    }
+  }
+
+  function dismissInitHint() {
+    if (projectInitStatus?.cwd) {
+      localStorage.setItem(`ocv:init-dismissed:${projectInitStatus.cwd}`, "1");
+    }
+    projectInitStatus = null;
+    dbg("chat", "init hint dismissed");
+  }
+
+  // ── Agent switching ──
+
+  /**
+   * Sync permission mode from agent/user settings.
+   * Only syncs when the user hasn't manually changed the mode this session.
+   * Does NOT set permissionModeSetByUser — that flag is only set by
+   * handlePermissionModeChange() (user manual action).
+   */
+  function syncPermissionModeFromSettings(as: AgentSettings | null, us: UserSettings | null) {
+    if (store.permissionModeSetByUser) return;
+    // Priority: agent.permission_mode > agent.plan_mode > user.permission_mode
+    if (as?.permission_mode) {
+      const cliName = APP_TO_CLI_MODE[as.permission_mode] ?? as.permission_mode;
+      store.permissionMode = cliName;
+    } else if (as?.plan_mode) {
+      store.permissionMode = "plan";
+    } else if (us?.permission_mode) {
+      const cliName = APP_TO_CLI_MODE[us.permission_mode] ?? us.permission_mode;
+      store.permissionMode = cliName;
+    }
+  }
+
+  async function handleAgentChange(newAgent: string, force = false) {
+    if (!force && newAgent === store.agent) return;
+    const seq = ++agentChangeSeq;
+    store.agent = newAgent;
+
+    // Model: clear and let the $effect(:1546) safely restore for Claude.
+    // For Codex, the $effect is gated by useStreamSession → stays empty → spawn.rs skips --model.
+    store.model = "";
+
+    // Async: agentSettings
+    try {
+      const as = await api.getAgentSettings(newAgent);
+      if (seq !== agentChangeSeq) return; // stale
+      agentSettings = as;
+    } catch {
+      if (seq !== agentChangeSeq) return;
+      agentSettings = null;
+    }
+
+    // Async: effort
+    if (newAgent === "codex") {
+      // Codex: effort lives in agent settings (injected at spawn), not CLI config.
+      // Default to "medium" (Codex's default) when unset so the selector shows a value.
+      currentEffort = agentSettings?.effort || "medium";
+    } else if (store.features.effortSelector) {
+      try {
+        const cfg = await api.getCliConfig();
+        if (seq !== agentChangeSeq) return;
+        currentEffort = typeof cfg.effortLevel === "string" ? cfg.effortLevel : "";
+      } catch {
+        if (seq !== agentChangeSeq) return;
+        currentEffort = "";
+      }
+    } else {
+      currentEffort = "";
+    }
+
+    if (seq !== agentChangeSeq) return;
+    // One-time migration: clear stale agentSettings.effort
+    if (agentSettings?.effort) {
+      api.updateAgentSettings(newAgent, { effort: "" }).catch(() => {});
+    }
+
+    // Re-sync permissionMode — reset flag (new agent needs fresh sync), then sync
+    store.permissionModeSetByUser = false;
+    syncPermissionModeFromSettings(agentSettings, settings);
+
+    // Auth detection banner (Codex only)
+    if (newAgent === "codex") {
+      codexWarning = null;
+      api
+        .checkCodexAuth()
+        .then((status) => {
+          if (seq !== agentChangeSeq) return;
+          if (!status.installed) {
+            codexWarning = t("codex_notInstalled");
+          } else if (!status.logged_in) {
+            codexWarning = t("codex_notLoggedIn");
+          } else {
+            codexWarning = null;
+          }
+        })
+        .catch(() => {});
+    } else {
+      codexWarning = null;
+    }
+
+    dbg("chat", "agent changed", { agent: newAgent, seq });
+  }
+
+  // ── Permission mode name translation ──
+  // Store/dropdown use CLI names; UserSettings uses app names; adapter.rs maps app→CLI.
+  const CLI_TO_APP_MODE: Record<string, string> = {
+    default: "ask",
+    acceptEdits: "auto_read",
+    bypassPermissions: "auto_all",
+    plan: "plan",
+    auto: "auto",
+    dontAsk: "dont_ask",
+  };
+  const APP_TO_CLI_MODE: Record<string, string> = {
+    ask: "default",
+    auto_read: "acceptEdits",
+    auto_all: "bypassPermissions",
+    plan: "plan",
+    auto: "auto",
+    dont_ask: "dontAsk",
+  };
+
+  function getPermModeLabel(mode: string): string {
+    const map: Record<string, () => string> = {
+      default: () => t("prompt_permAskShort"),
+      acceptEdits: () => t("prompt_permAutoReadShort"),
+      bypassPermissions: () => t("prompt_permAutoAllShort"),
+      plan: () => t("prompt_permPlanShort"),
+      auto: () => t("prompt_permAutoShort"),
+      dontAsk: () => t("prompt_permDontAskShort"),
+    };
+    return map[mode]?.() ?? mode;
+  }
+
+  let permissionModeChangeSeq = 0;
+  let pendingPersist: Promise<void> = Promise.resolve();
+
+  async function handlePermissionModeChange(
+    newMode: string,
+    opts?: { toast?: boolean },
+  ): Promise<boolean> {
+    const seq = ++permissionModeChangeSeq;
+    const oldMode = store.permissionMode;
+    const oldFlag = store.permissionModeSetByUser;
+    const oldPersistFailed = store.permissionModePersistFailed;
+    const hadActiveSession = store.sessionAlive; // capture at entry, before awaits
+    dbg("chat", "permission mode change", { from: oldMode, to: newMode, seq, hadActiveSession });
+
+    // Optimistic UI + protect from session_init during awaits
+    store.permissionMode = newMode;
+    store.permissionModeSetByUser = true;
+    store.permissionModePersistFailed = false;
+
+    const appName = CLI_TO_APP_MODE[newMode] ?? newMode;
+
+    if (effectiveAgent === "codex") {
+      // Codex (app-server): persist to agent-scoped settings (future spawns) AND, when the
+      // session is alive, hot-switch via the control protocol so the override applies on the
+      // NEXT turn. The backend maps `newMode` (CLI mode, e.g. acceptEdits/plan/bypassPermissions)
+      // → approvalPolicy + sandboxPolicy, reusing the same semantics as the spawn-time path.
+      try {
+        await api.updateAgentSettings("codex", { permission_mode: appName });
+        dbg("chat", "codex permission_mode persisted", { appName });
+      } catch (e) {
+        if (seq !== permissionModeChangeSeq) return false;
+        // Rollback
+        store.permissionMode = oldMode;
+        store.permissionModeSetByUser = oldFlag;
+        store.permissionModePersistFailed = oldPersistFailed;
+        dbgWarn("chat", "codex permission_mode persist failed:", e);
+        store.error = t("chat_permModeFailed", { mode: newMode, error: String(e) });
+        if (opts?.toast !== false) showChatToast(t("toast_permissionChangeFailed"));
+        return false;
+      }
+      if (seq !== permissionModeChangeSeq) return false;
+      // Live apply to the running app-server session (best-effort; persisted value above
+      // is the fallback for future spawns if this fails or there is no live session).
+      let liveApplied = false;
+      if (hadActiveSession && store.run) {
+        try {
+          await api.setPermissionMode(store.run.id, newMode);
+          liveApplied = true;
+          dbg("chat", "codex permission mode hot-switched via control protocol", { newMode });
+        } catch (e) {
+          dbgWarn("chat", "codex permission mode hot-switch failed (persisted for next spawn):", e);
+        }
+      }
+      if (seq !== permissionModeChangeSeq) return false;
+      if (opts?.toast !== false) {
+        showChatToast(
+          liveApplied
+            ? t("toast_permissionMode", { mode: getPermModeLabel(newMode) })
+            : t("toast_permissionModeNextTurn", { mode: getPermModeLabel(newMode) }),
+        );
+      }
+      return true;
+    }
+
+    // Claude path: hot-switch via control protocol if active session
+    if (hadActiveSession && store.run) {
+      try {
+        await api.setPermissionMode(store.run.id, newMode);
+        dbg("chat", "permission mode changed via control protocol", { newMode });
+      } catch (e) {
+        if (seq !== permissionModeChangeSeq) return false;
+        // Restore mode, flag, AND persistFailed
+        store.permissionMode = oldMode;
+        store.permissionModeSetByUser = oldFlag;
+        store.permissionModePersistFailed = oldPersistFailed;
+        dbgWarn("chat", "permission mode change failed:", e);
+        store.error = t("chat_permModeFailed", { mode: newMode, error: String(e) });
+        if (opts?.toast !== false) {
+          showChatToast(t("toast_permissionFailed"));
+        }
+        return false;
+      }
+    }
+
+    if (seq !== permissionModeChangeSeq) return false;
+
+    if (opts?.toast !== false) {
+      showChatToast(t("toast_permissionMode", { mode: getPermModeLabel(newMode) }));
+    }
+
+    // Persist — serialized to prevent concurrent writes overwriting each other.
+    // persistFailed flag signals whether the no-active-session branch reverted.
+    let persistFailed = false;
+
+    pendingPersist = pendingPersist
+      .then(async () => {
+        if (seq !== permissionModeChangeSeq) return;
+        try {
+          await api.updateUserSettings({ permission_mode: appName });
+          dbg("chat", "permission mode persisted", { appName });
+        } catch (e) {
+          if (seq !== permissionModeChangeSeq) return;
+          dbgWarn("chat", "permission mode persist failed:", e);
+          if (hadActiveSession) {
+            // CLI was already switched via control protocol → current session correct.
+            // Mark persist-failed so _clearContentState() resets flag on next run,
+            // allowing new session's session_init to re-sync from CLI's startup mode.
+            store.permissionModePersistFailed = true;
+            if (opts?.toast !== false) showChatToast(t("toast_permissionPersistFailed"));
+          } else {
+            // No active session → persist was ONLY path for mode to take effect.
+            // Revert everything.
+            persistFailed = true;
+            store.permissionMode = oldMode;
+            store.permissionModeSetByUser = oldFlag;
+            store.permissionModePersistFailed = oldPersistFailed;
+            dbgWarn("chat", "no active session — reverting UI to match persisted settings");
+            if (opts?.toast !== false) showChatToast(t("toast_permissionChangeFailed"));
+          }
+        }
+      })
+      .catch(() => {}); // ensure chain never breaks
+
+    await pendingPersist;
+
+    if (persistFailed) return false;
+
+    // Sync legacy plan_mode (fire-and-forget)
+    if (seq === permissionModeChangeSeq) {
+      api.updateAgentSettings(store.agent, { plan_mode: newMode === "plan" }).catch((e) => {
+        dbgWarn("chat", "plan_mode sync failed:", e);
+      });
+    }
+
+    return seq === permissionModeChangeSeq;
+  }
+
+  // ── HTML Export ──
+
+  async function handleExportHtml() {
+    if (!store.run) {
+      dbgWarn("chat", "handleExportHtml: no run");
+      showChatToast(t("export_noConversation"));
+      return;
+    }
+    dbg("chat", "handleExportHtml: start");
+
+    let html: string;
+    let title: string;
+    const prevFilter = toolFilter;
+    const prevLimit = renderLimit;
+    try {
+      // Force full render (clear filter + unlimited)
+      toolFilter = null;
+      renderLimit = Infinity;
+      await tick();
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      // Re-query after Svelte re-render (DOM may have been replaced)
+      const rootEl = document.querySelector<HTMLElement>("[data-conversation-root]");
+      if (!rootEl) {
+        dbgWarn("chat", "handleExportHtml: data-conversation-root not found");
+        showChatToast(t("export_noConversation"));
+        return;
+      }
+
+      const { exportConversationToHtml, buildExportFilename: buildFn } =
+        await import("$lib/utils/html-export");
+
+      title = store.run.name ?? store.run.prompt?.slice(0, 80) ?? "Untitled";
+      html = await exportConversationToHtml(rootEl, {
+        title,
+        sessionInfo: {
+          model: store.model,
+          cwd: store.effectiveCwd,
+          startedAt: store.run.started_at,
+          turnCount: store.numTurns || store.timeline.filter((e) => e.kind === "user").length,
+        },
+      });
+
+      // Restore UI immediately (HTML already captured, no need to keep filter cleared)
+      toolFilter = prevFilter;
+      renderLimit = prevLimit;
+
+      const { downloadText } = await import("$lib/utils/browser");
+      downloadText(html, buildFn(title), "text/html");
+      dbg("chat", "handleExportHtml: browser download started");
+      showChatToast(t("export_htmlSuccess"));
+    } catch (e) {
+      dbgWarn("chat", "handleExportHtml failed", e);
+      showChatToast(t("export_htmlFailed"));
+    } finally {
+      // Ensure restore even on early return paths
+      toolFilter = prevFilter;
+      renderLimit = prevLimit;
+    }
+  }
+
+  async function handleModelChange(newModel: string) {
+    dbg("chat", "model change", { agent: effectiveAgent, from: store.model, to: newModel });
+    store.model = newModel;
+
+    // Thunk — deferred execution, called explicitly per branch
+    const persistRunModel = () =>
+      store.run ? api.updateRunModel(store.run.id, newModel) : Promise.resolve();
+
+    if (effectiveAgent === "codex") {
+      // Codex (app-server): persist to agent settings + run meta (future spawns) AND, when the
+      // session is alive, hot-switch via the control protocol so the override applies on the
+      // NEXT turn. No Codex default_model concept — agent settings carry the per-agent model.
+      const [settingsResult, runResult] = await Promise.allSettled([
+        api.updateAgentSettings("codex", { model: newModel }),
+        persistRunModel(),
+      ]);
+      if (settingsResult.status === "rejected") {
+        dbgWarn("chat", "failed to persist codex agent settings", settingsResult.reason);
+      }
+      if (runResult.status === "rejected") {
+        dbgWarn("chat", "failed to persist codex run model", runResult.reason);
+      }
+      if (store.sessionAlive && store.run) {
+        try {
+          await api.setSessionModel(store.run.id, newModel);
+          dbg("chat", "codex model hot-switched via control protocol", { newModel });
+        } catch (e) {
+          dbgWarn("chat", "codex model hot-switch failed (persisted for next turn):", e);
+        }
+      }
+      return;
+    }
+
+    // Claude path:
+    const isThirdParty = store.platformId && store.platformId !== "anthropic";
+
+    // Persist model to run meta (fire-and-forget)
+    persistRunModel().catch((e) => {
+      dbgWarn("chat", "failed to persist run model", e);
+    });
+
+    // Hot-switch model if session is alive (only for Anthropic — third-party models
+    // are set via ANTHROPIC_MODEL env var at spawn time, not via control protocol)
+    if (!isThirdParty && store.sessionAlive && store.run) {
+      try {
+        await api.sendSessionControl(store.run.id, "set_model", { model: newModel });
+        dbg("chat", "model hot-switched via control protocol");
+      } catch (e) {
+        dbgWarn("chat", "model hot-switch failed, will use new model on next session", e);
+      }
+    }
+
+    // Only persist default_model for Anthropic — third-party models managed per-credential
+    if (!isThirdParty) {
+      lastKnownGoodAnthropicModel = newModel;
+      try {
+        await api.updateUserSettings({ default_model: newModel });
+      } catch (e) {
+        dbgWarn("chat", "failed to persist model change", e);
+      }
+    }
+  }
+
+  async function handleEffortChange(newEffort: string) {
+    dbg("chat", "effort change", { agent: effectiveAgent, from: currentEffort, to: newEffort });
+    currentEffort = newEffort;
+
+    if (effectiveAgent === "codex") {
+      // Codex (app-server): persist to agent settings (future spawns inject
+      // -c model_reasoning_effort) AND, when the session is alive, hot-switch via the control
+      // protocol so the override applies on the NEXT turn. Empty clears the override (Codex
+      // falls back to its own configured default).
+      if (agentSettings) agentSettings.effort = newEffort;
+      api.updateAgentSettings("codex", { effort: newEffort }).catch((e) => {
+        dbgWarn("chat", "failed to persist codex effort", e);
+      });
+      if (store.sessionAlive && store.run) {
+        try {
+          await api.setEffort(store.run.id, newEffort);
+          dbg("chat", "codex effort hot-switched via control protocol", { newEffort });
+        } catch (e) {
+          dbgWarn("chat", "codex effort hot-switch failed (persisted for next turn):", e);
+        }
+      }
+      return;
+    }
+
+    // Claude: write to CLI config (~/.claude/settings.json) — the CLI reads effortLevel
+    // per-request, so changes take effect immediately within a running session.
+    // Deliberately NOT writing to agentSettings.effort — that would cause --effort
+    // to be passed at spawn, which locks the CLI's in-memory effort and prevents
+    // settings.json changes from being picked up during the session.
+    api.updateCliConfig({ effortLevel: newEffort || null }).catch((e) => {
+      dbgWarn("chat", "failed to persist effort to CLI config", e);
+    });
+  }
+
+  async function handleAuthModeChange(mode: string) {
+    dbg("chat", "auth mode change", { from: store.authMode, to: mode });
+    store.authMode = mode;
+    try {
+      await api.updateUserSettings({ auth_mode: mode } as Partial<UserSettings>);
+      // Refresh auth overview after mode change
+      authOverview = await api.getAuthOverview();
+    } catch (e) {
+      dbgWarn("chat", "failed to persist auth mode change", e);
+    }
+  }
+
+  async function checkAllLocalProxies() {
+    const localPresets = PLATFORM_PRESETS.filter((p) => p.category === "local");
+    const results = await Promise.allSettled(
+      localPresets.map((p) => {
+        const cred = findCredential(settings?.platform_credentials ?? [], p.id);
+        const url = cred?.base_url || p.base_url;
+        return api.detectLocalProxy(p.id, url);
+      }),
+    );
+    const statuses: Record<string, { running: boolean; needsAuth: boolean }> = {};
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        statuses[localPresets[i].id] = { running: r.value.running, needsAuth: r.value.needsAuth };
+      } else {
+        statuses[localPresets[i].id] = { running: false, needsAuth: false };
+      }
+    });
+    localProxyStatuses = statuses;
+    dbg("chat", "checkAllLocalProxies", statuses);
+  }
+
+  async function handlePlatformChange(platformId: string) {
+    dbg("chat", "platform change", { from: store.platformId, to: platformId });
+    store.platformId = platformId;
+
+    // Auto-switch model to provider's default when switching to a third-party platform.
+    // Only for stream-session agents — Codex manages its own model via CLI.
+    // Priority: credential.models (user-configured) > preset.models (static defaults)
+    if (store.useStreamSession) {
+      const cred = findCredential(settings?.platform_credentials ?? [], platformId);
+      const preset = PLATFORM_PRESETS.find((p) => p.id === platformId);
+      const models = cred?.models?.length ? cred.models : preset?.models;
+      if (models?.length) {
+        const defaultModel = models[0];
+        dbg("chat", "auto-switch model for platform", { platformId, model: defaultModel });
+        store.model = defaultModel;
+      } else if (platformId === "anthropic") {
+        // Switching back to Anthropic: always overwrite — don't keep third-party model;
+        // don't fallback to settings.default_model which might be contaminated.
+        const cliModel = getCliCurrentModel();
+        store.model = cliModel || "";
+        dbg("chat", "restore model on switch to anthropic", { cliModel, using: store.model });
+      } else {
+        // Custom/unknown platform without preset models: clear model
+        // (let CLI use whatever default it has, or the user can set manually)
+        store.model = "";
+      }
+    }
+
+    // Only persist default_model when switching to Anthropic with a validated CLI model.
+    // Don't persist empty or potentially-stale model values.
+    const persistUpdate: Partial<UserSettings> = { active_platform_id: platformId };
+    if (platformId === "anthropic") {
+      const validated = getCliCurrentModel();
+      if (validated) persistUpdate.default_model = validated;
+    }
+    try {
+      await api.updateUserSettings(persistUpdate);
+    } catch (e) {
+      dbgWarn("chat", "failed to persist platform change", e);
+    }
+    // Refresh local proxy statuses after platform switch
+    checkAllLocalProxies();
+  }
+
+  function appendCommandOutput(text: string) {
+    const cmdId = uuid();
+    store.timeline = [
+      ...store.timeline,
+      {
+        kind: "command_output",
+        id: cmdId,
+        anchorId: cmdId,
+        content: text,
+        ts: new Date().toISOString(),
+      },
+    ];
+  }
+
+  async function handleRename(name: string) {
+    if (!store.run) return;
+    try {
+      await api.renameRun(store.run.id, name);
+      store.run = { ...store.run, name };
+      window.dispatchEvent(new Event("ocv:runs-changed"));
+      dbg("chat", "renamed run", { id: store.run.id, name });
+    } catch (e) {
+      dbgWarn("chat", "rename failed", e);
+    }
+  }
+
+  // Auto-name: on first idle, generate title from prompt (one-shot per run)
+  $effect(() => {
+    const result = shouldAutoName({
+      phase: store.phase,
+      runId: store.run?.id,
+      runName: store.run?.name,
+      prompt: store.run?.prompt,
+      autoNameDone,
+    });
+    if (result.fire && result.autoName) {
+      autoNameDone = true;
+      handleRename(result.autoName);
+    }
+  });
+
+  async function handleFastModeSwitch(mode: "on" | "off") {
+    const enabling = mode === "on";
+    const current = store.fastModeState === "on";
+    if (enabling === current) {
+      appendCommandOutput(t(enabling ? "fast_alreadyOn" : "fast_alreadyOff"));
+      return;
+    }
+    try {
+      await api.updateCliConfig({ fastMode: enabling });
+      store.fastModeState = enabling ? "on" : "";
+      dbg("chat", "fastMode set", { mode });
+      showChatToast(t(enabling ? "toast_fastModeOn" : "toast_fastModeOff"));
+      appendCommandOutput(t(enabling ? "fast_enabled" : "fast_disabled"));
+    } catch (e) {
+      dbgWarn("chat", "fastMode set failed:", e);
+    }
+  }
+
+  async function handleBtwSend(question: string) {
+    if (!store.run?.id) return;
+    dbg("chat", "btwSend", { runId: store.run.id, question: question.slice(0, 50) });
+    btwState = { active: true, btwId: null, question, answer: "", error: null, loading: true };
+    try {
+      const btwId = await api.sideQuestion(store.run.id, question);
+      btwState.btwId = btwId;
+    } catch (e) {
+      btwState.error = String(e);
+      btwState.loading = false;
+    }
+  }
+
+  // ── Preview helpers ──
+
+  function isLocalhostUrl(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return (
+        ["localhost", "127.0.0.1", "0.0.0.0", "[::1]"].includes(u.hostname) &&
+        ["http:", "https:"].includes(u.protocol)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async function openPreview(url: string): Promise<"ok" | "invalid_url" | "open_failed"> {
+    dbg("preview", "openPreview", { url });
+    if (!isLocalhostUrl(url)) return "invalid_url";
+
+    const instanceId = uuid();
+    resetPreviewState();
+    previewInstanceId = instanceId;
+
+    try {
+      await api.openPreviewWindow(url, instanceId);
+      localStorage.setItem("ocv:preview-url", url);
+      return "ok";
+    } catch (e) {
+      dbgWarn("preview", "openPreview failed", e);
+      resetPreviewState();
+      const msg = String(e);
+      if (msg.startsWith("preview_invalid_url:")) return "invalid_url";
+      return "open_failed";
+    }
+  }
+
+  async function closePreview() {
+    dbg("preview", "closePreview");
+    resetPreviewState();
+    await api.closePreviewWindow();
+  }
+
+  function resetPreviewState() {
+    previewInstanceId = "";
+  }
+
+  /** Open preview + show result as command output. Returns true on success. */
+  async function openPreviewAndNotify(url: string): Promise<boolean> {
+    const result = await openPreview(url);
+    if (result === "ok") {
+      appendCommandOutput(t("preview_opened"));
+      return true;
+    }
+    appendCommandOutput(t(result === "invalid_url" ? "preview_invalidUrl" : "preview_openFailed"));
+    return false;
+  }
+
+  function formatElementContext(sel: ElementSelection): string {
+    const lines = [
+      `[Page Element]`,
+      `URL: ${sel.url}`,
+      `Path: ${sel.domPath}`,
+      `Tag: ${sel.tagName}`,
+    ];
+    if (sel.textContent) lines.push(`Text: "${sel.textContent.slice(0, 200)}"`);
+    const attrs = Object.entries(sel.attributes)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(", ");
+    if (attrs) lines.push(`Attributes: ${attrs}`);
+    const styles = Object.entries(sel.styleSummary)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(", ");
+    if (styles) lines.push(`Styles: ${styles}`);
+    lines.push(`HTML: ${sel.outerHtmlSnippet.slice(0, 500)}`);
+    return lines.join("\n");
+  }
+
+  async function handleRalphCancel() {
+    if (!store.run?.id) return;
+    try {
+      const result = await api.cancelRalphLoop(store.run.id);
+      if (result.immediate) {
+        appendCommandOutput(`Loop cancelled (iteration ${result.iteration})`);
+      } else {
+        appendCommandOutput(
+          `Loop will stop after current iteration (iteration ${result.iteration})`,
+        );
+      }
+    } catch (err) {
+      appendCommandOutput(
+        `Failed to cancel loop: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async function handleVirtualCommand(action: string, args: string) {
+    dbg("chat", "virtualCommand", { action, args });
+    // Guard: block excluded virtual commands for the current agent.
+    // Emits user-visible feedback so gated commands don't fail silently when
+    // typed directly (the menu already hides them, but direct invocation,
+    // history replay, and tests can still reach here).
+    const vDef = VIRTUAL_COMMANDS.find((v) => v["_action"] === action);
+    if (vDef) {
+      const excluded = vDef["_excludeAgents"];
+      if (Array.isArray(excluded) && excluded.includes(effectiveAgent)) {
+        dbg("chat", "virtualCommand blocked for agent", { action, agent: effectiveAgent });
+        appendCommandOutput(
+          t("slash_notSupportedForAgent", {
+            command: vDef.name,
+            agent: effectiveAgent === "codex" ? "Codex" : "Claude",
+          }),
+        );
+        return;
+      }
+    }
+    if (action === "copy-last") {
+      const lastAssistant = [...store.timeline].reverse().find((e) => e.kind === "assistant");
+      if (lastAssistant && lastAssistant.kind === "assistant" && lastAssistant.content) {
+        try {
+          await navigator.clipboard.writeText(lastAssistant.content);
+          const chars = lastAssistant.content.length;
+          const lines = lastAssistant.content.split("\n").length;
+          appendCommandOutput(
+            t("chat_copiedClipboard", { chars: String(chars), lines: String(lines) }),
+          );
+          dbg("chat", "copied last response", { chars, lines });
+        } catch (e) {
+          dbgWarn("chat", "copy failed", e);
+          appendCommandOutput(t("chat_copyFailed"));
+        }
+      } else {
+        appendCommandOutput(t("chat_noResponseToCopy"));
+      }
+    } else if (action === "rename-session") {
+      if (!store.run) {
+        appendCommandOutput(t("chat_noSessionToRename"));
+        return;
+      }
+      if (args) {
+        // With args: rename locally
+        await handleRename(args);
+        appendCommandOutput(t("chat_sessionRenamed", { name: args }));
+      } else if (store.sessionAlive) {
+        // No args + session alive: send /rename to CLI (AI-generated name)
+        await sendMessage("/rename", []);
+      } else {
+        appendCommandOutput("Usage: /rename <name>");
+      }
+    } else if (action === "toggle-plan") {
+      const entering = store.permissionMode !== "plan";
+      const newMode = entering ? "plan" : "default";
+      const ok = await handlePermissionModeChange(newMode, { toast: false });
+      if (ok) {
+        appendCommandOutput(entering ? "Plan mode enabled" : "Plan mode disabled");
+        // If instructions provided, send them as a message
+        if (args && entering) {
+          await sendMessage(args, []);
+        }
+      }
+      // On failure, handlePermissionModeChange already sets store.error
+    } else if (action === "show-help") {
+      const baseCmds =
+        store.sessionInitReceived && store.sessionCommands.length > 0
+          ? store.sessionCommands
+          : effectiveAgent === "codex"
+            ? []
+            : mergeProjectCommands(getCliCommands(), projectCommands);
+      const allCmds = mergeWithVirtual(baseCmds, effectiveAgent);
+      const skillSet = effectiveAgent === "codex" ? undefined : new Set(store.availableSkills);
+      appendCommandOutput(buildHelpText(allCmds, skillSet));
+    } else if (action === "run-doctor") {
+      try {
+        dbg("doctor", "run-doctor triggered", { cwd: store.effectiveCwd });
+        const cwd = store.effectiveCwd || localStorage.getItem("ocv:project-cwd") || "";
+        const mcpSvrs = store.sessionAlive ? store.mcpServers : undefined;
+        const report = await buildDoctorReport(cwd, mcpSvrs);
+        appendCommandOutput(report);
+      } catch (err) {
+        dbgWarn("doctor", "run_diagnostics failed", err);
+        appendCommandOutput(
+          `❌ ${t("doctor_failed")}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else if (action === "show-status") {
+      if (!hasSidebarData) {
+        appendCommandOutput(t("statusPanel_noSession"));
+        return;
+      }
+      if (sidebarCollapsed) sidebarCollapsed = false;
+      sidebarRequestedTab = "info";
+    } else if (action === "list-todos") {
+      // Escape markdown special chars in todo content
+      const esc = (s: string) => s.replace(/([\\*_~`[\]#>|])/g, "\\$1");
+
+      // Same source as the TodoPanel (Tasks system or legacy TodoWrite). Empty covers
+      // both "no tasks yet" and an empty list — CLI /todos produces no timeline event,
+      // so there's nothing to send.
+      const tasks = store.panelTasks;
+      if (tasks.length === 0) {
+        appendCommandOutput(t("todos_empty"));
+      } else {
+        const lines = tasks.map((task) => {
+          const text = esc(task.text);
+          if (task.status === "completed") return `- [x] ~~${text}~~`;
+          if (task.status === "in_progress") return `- [ ] **⏳ ${text}**`;
+          return `- [ ] ${text}`;
+        });
+        appendCommandOutput(lines.join("\n"));
+      }
+    } else if (action === "show-diff") {
+      const cwd = store.effectiveCwd || localStorage.getItem("ocv:project-cwd") || "";
+      if (!cwd) {
+        appendCommandOutput(t("diff_noCwd"));
+        return;
+      }
+      try {
+        dbg("chat", "show-diff", { cwd });
+        const [unstaged, staged] = await Promise.all([
+          api.getGitDiff(cwd, false),
+          api.getGitDiff(cwd, true),
+        ]);
+        if (!unstaged.trim() && !staged.trim()) {
+          appendCommandOutput(t("diff_noChanges"));
+          return;
+        }
+        // Add source-file line numbers parsed from @@ hunk headers
+        function addLineNumbers(raw: string): string {
+          const lines = raw.split("\n");
+          const out: string[] = [];
+          let oldLn = 0,
+            newLn = 0;
+          for (const line of lines) {
+            if (line.startsWith("@@")) {
+              const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+              if (m) {
+                oldLn = parseInt(m[1]);
+                newLn = parseInt(m[2]);
+              }
+              out.push(line);
+            } else if (
+              line.startsWith("diff ") ||
+              line.startsWith("index ") ||
+              line.startsWith("--- ") ||
+              line.startsWith("+++ ")
+            ) {
+              out.push(line);
+            } else if (line.startsWith("+")) {
+              out.push(`+${String(newLn).padStart(4)} │ ${line.slice(1)}`);
+              newLn++;
+            } else if (line.startsWith("-")) {
+              out.push(`-${String(oldLn).padStart(4)} │ ${line.slice(1)}`);
+              oldLn++;
+            } else if (line.length > 0 && line[0] === " ") {
+              out.push(` ${String(newLn).padStart(4)} │ ${line.slice(1)}`);
+              oldLn++;
+              newLn++;
+            } else {
+              out.push(line);
+            }
+          }
+          return out.join("\n");
+        }
+        const parts: string[] = [];
+        if (unstaged.trim()) {
+          parts.push(
+            `### ${t("diff_unstaged")}\n\n\`\`\`diff\n${addLineNumbers(unstaged.trimEnd())}\n\`\`\``,
+          );
+        }
+        if (staged.trim()) {
+          parts.push(
+            `### ${t("diff_staged")}\n\n\`\`\`diff\n${addLineNumbers(staged.trimEnd())}\n\`\`\``,
+          );
+        }
+        appendCommandOutput(parts.join("\n\n"));
+      } catch (err) {
+        dbgWarn("chat", "show-diff failed", err);
+        appendCommandOutput(
+          `${t("diff_failed")}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else if (action === "list-tasks") {
+      const tasks = [...store.taskNotifications.values()];
+
+      if (!args) {
+        // /tasks (no args) — list all tasks as a table
+        dbg("chat", "list-tasks", { count: store.taskNotifications.size });
+        if (tasks.length === 0) {
+          appendCommandOutput(t("slashTasks_empty"));
+          return;
+        }
+        // Sort: active first, then by most recent
+        const sorted = tasks.sort((a, b) => {
+          const aActive =
+            a.status !== "completed" && a.status !== "failed" && a.status !== "error" ? 1 : 0;
+          const bActive =
+            b.status !== "completed" && b.status !== "failed" && b.status !== "error" ? 1 : 0;
+          if (aActive !== bActive) return bActive - aActive;
+          return b.startedAt - a.startedAt;
+        });
+        const now = Date.now();
+        const elapsed = (ms: number) => {
+          const sec = Math.floor((now - ms) / 1000);
+          if (sec < 60) return `${sec}s`;
+          const min = Math.floor(sec / 60);
+          if (min < 60) return `${min}m`;
+          return `${Math.floor(min / 60)}h${min % 60}m`;
+        };
+        const lines: string[] = [
+          "| ID | Type | Status | Description | Elapsed |",
+          "|-----|------|--------|-------------|---------|",
+        ];
+        for (const task of sorted) {
+          const shortId = task.task_id.length > 12 ? task.task_id.slice(0, 12) + "…" : task.task_id;
+          const taskType = task.task_type || "—";
+          const desc =
+            (task.summary || task.message || "").length > 50
+              ? (task.summary || task.message || "").slice(0, 50) + "…"
+              : task.summary || task.message || "—";
+          lines.push(
+            `| \`${shortId}\` | ${taskType} | ${task.status} | ${desc} | ${elapsed(task.startedAt)} |`,
+          );
+        }
+        lines.push("");
+        lines.push(t("slashTasks_hint"));
+        appendCommandOutput(lines.join("\n"));
+      } else {
+        // /tasks <id> — show detail for a specific task
+        dbg("chat", "list-tasks:detail", { id: args });
+
+        // Exact match first, then prefix match
+        let matches = tasks.filter((t) => t.task_id === args);
+        if (matches.length === 0) {
+          matches = tasks.filter((t) => t.task_id.startsWith(args));
+        }
+
+        if (matches.length === 0) {
+          dbg("chat", "list-tasks:detail", { id: args, found: false });
+          appendCommandOutput(t("slashTasks_notFound", { id: args }));
+        } else if (matches.length === 1) {
+          const task = matches[0];
+          const hasOutput = !!task.output_file;
+          dbg("chat", "list-tasks:detail", { id: args, found: true, hasOutput });
+          const now = Date.now();
+          const sec = Math.floor((now - task.startedAt) / 1000);
+          const meta = [
+            `| Field | Value |`,
+            `|-------|-------|`,
+            `| ID | \`${task.task_id}\` |`,
+            `| Status | ${task.status} |`,
+            `| Type | ${task.task_type || "—"} |`,
+            `| Description | ${task.message || "—"} |`,
+            task.summary ? `| Summary | ${task.summary} |` : null,
+            `| Elapsed | ${sec}s |`,
+            task.output_file ? `| Output file | \`${task.output_file}\` |` : null,
+          ]
+            .filter(Boolean)
+            .join("\n");
+
+          if (task.output_file) {
+            try {
+              const raw = await api.readTaskOutput(task.output_file);
+              dbg("chat", "readTaskOutput", { path: task.output_file, ok: true });
+              // Frontend truncation: last 200 lines
+              const allLines = raw.split("\n");
+              const trimmed =
+                allLines.length > 200
+                  ? `... (${allLines.length - 200} lines truncated)\n${allLines.slice(-200).join("\n")}`
+                  : raw;
+              appendCommandOutput(`${meta}\n\n**Output:**\n\`\`\`\n${trimmed}\n\`\`\``);
+            } catch (err) {
+              dbgWarn("chat", "readTaskOutput failed", err);
+              appendCommandOutput(
+                `${meta}\n\n${t("slashTasks_outputError", { error: err instanceof Error ? err.message : String(err) })}`,
+              );
+            }
+          } else {
+            appendCommandOutput(meta);
+          }
+        } else {
+          // Multiple matches — ambiguous
+          const list = matches.map((m) => `- \`${m.task_id}\` (${m.status})`).join("\n");
+          appendCommandOutput(`${t("slashTasks_ambiguous", { id: args })}\n${list}`);
+        }
+      }
+    } else if (action === "toggle-fast") {
+      const arg = args.toLowerCase();
+      if (arg === "on" || arg === "off") {
+        await handleFastModeSwitch(arg);
+      } else if (arg === "") {
+        const enabling = store.fastModeState !== "on";
+        await handleFastModeSwitch(enabling ? "on" : "off");
+      } else {
+        appendCommandOutput(t("fast_usage"));
+      }
+    } else if (action === "add-dir") {
+      try {
+        await executeAddDir(
+          { agent: store.agent, sessionAlive: store.sessionAlive, args },
+          {
+            openDirectoryDialog: async (title) => {
+              return window.prompt(title) || null;
+            },
+            sendMessage: (text) => sendMessage(text, []),
+            getAgentSettings: api.getAgentSettings,
+            updateAgentSettings: api.updateAgentSettings,
+            appendOutput: appendCommandOutput,
+            t: t as (key: string, params?: Record<string, string>) => string,
+          },
+        );
+      } catch (err) {
+        dbgWarn("chat", "add-dir failed", err);
+        appendCommandOutput(
+          t("chat_addDirFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+    } else if (action === "clear-context") {
+      if (!store.run) {
+        appendCommandOutput(t("chat_noActiveSession"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("chat_clearSessionBusy"));
+        return;
+      }
+
+      if (store.useStreamSession) {
+        // Claude: stop active session actor
+        dbg("chat", "clear-context: stopping Claude session", { runId: store.run.id });
+        try {
+          await store.stop();
+        } catch (e) {
+          dbgWarn("chat", "clear-context stop failed", e);
+          store.error = String(e);
+          return;
+        }
+      } else {
+        // Codex: current run retains its thread. Navigate to fresh chat → new thread on next msg.
+        dbg("chat", "clear-context: leaving Codex run", { runId: store.run.id });
+      }
+
+      goto("/chat", { replaceState: true });
+      window.dispatchEvent(new Event("ocv:runs-changed"));
+    } else if (action === "rewind") {
+      if (!store.run) {
+        appendCommandOutput(t("rewind_noSession"));
+      } else if (!store.sessionAlive) {
+        appendCommandOutput(t("rewind_sessionEnded"));
+      } else if (store.isRunning) {
+        appendCommandOutput(t("rewind_sessionBusy"));
+      } else {
+        handleRewind();
+      }
+    } else if (action === "open-permissions") {
+      window.dispatchEvent(new CustomEvent("ocv:open-permissions"));
+    } else if (action === "open-stickers") {
+      const url = "https://www.stickermule.com/claudecode";
+      dbg("chat", "open-stickers", { url });
+      window.open(url, "_blank", "noopener,noreferrer");
+      appendCommandOutput("Opening sticker page in browser…");
+    } else if (action === "open-feedback") {
+      // Source-of-truth: matches package.json `bugs.url`. If the repo URL ever
+      // changes, update both this constant AND package.json.
+      const url = "https://github.com/ZoomBili/OpenCovibe-web/issues";
+      dbg("chat", "open-feedback", { url });
+      window.open(url, "_blank", "noopener,noreferrer");
+      appendCommandOutput(t("feedback_opening"));
+    } else if (action === "start-ralph-loop") {
+      // Defense-in-depth: even if menu/parse layers miss it, Ralph requires
+      // a long-lived stream-session — Codex pipe-exec is incompatible.
+      if (effectiveAgent === "codex") {
+        appendCommandOutput("Ralph loop is not supported for Codex sessions yet.");
+        return;
+      }
+      const parsed = parseRalphArgs(args);
+      if (!parsed.prompt) {
+        appendCommandOutput(
+          "Usage: /ralph <prompt> [--max-iterations N] [--completion-promise TEXT]",
+        );
+        return;
+      }
+      try {
+        // If no active session, send the prompt as a normal message first to bootstrap
+        if (!store.run?.id || !store.sessionAlive) {
+          await sendMessage(parsed.prompt, []);
+          // Wait briefly for session to be alive (actor created)
+          let retries = 0;
+          while (!store.sessionAlive && retries < 20) {
+            await new Promise((r) => setTimeout(r, 100));
+            retries++;
+          }
+          if (!store.run?.id || !store.sessionAlive) {
+            appendCommandOutput("Failed to start session for ralph loop.");
+            return;
+          }
+        }
+        await api.startRalphLoop(
+          store.run.id,
+          parsed.prompt,
+          parsed.maxIterations,
+          parsed.completionPromise,
+        );
+        appendCommandOutput(
+          `Ralph loop started (max: ${parsed.maxIterations || "unlimited"}, promise: ${parsed.completionPromise ?? "none"})`,
+        );
+      } catch (err) {
+        appendCommandOutput(
+          `Failed to start loop: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else if (action === "cancel-ralph-loop") {
+      if (effectiveAgent === "codex") {
+        appendCommandOutput("Ralph loop is not supported for Codex sessions yet.");
+        return;
+      }
+      await handleRalphCancel();
+    } else if (action === "toggle-preview") {
+      if (args) {
+        await openPreviewAndNotify(args);
+      } else if (previewOpen) {
+        await closePreview();
+        appendCommandOutput(t("preview_closed"));
+      } else {
+        const lastUrl = localStorage.getItem("ocv:preview-url");
+        if (lastUrl) {
+          await openPreviewAndNotify(lastUrl);
+        } else {
+          appendCommandOutput(t("preview_usage"));
+        }
+      }
+    } else if (action === "init-project") {
+      // Codex-only: mirror Codex TUI's /init by injecting the upstream init
+      // prompt as a user message. The model runs git ls-files and writes
+      // AGENTS.md via its file tools. Claude CLI handles /init itself.
+      //
+      // Order: agent → cwd resolve → no-cwd → remote → isRunning → pathExists
+      // → dbg(requested) → localStorage handoff → sendMessage. Each guard
+      // emits a dbgWarn so blocked requests are traceable; the "requested"
+      // dbg only fires once all guards pass.
+      if (effectiveAgent !== "codex") return;
+      const projectCwd =
+        store.effectiveCwd ||
+        store.sessionCwd ||
+        store.run?.cwd ||
+        folderCwdOverride ||
+        projectInitStatus?.cwd ||
+        (typeof localStorage !== "undefined"
+          ? (localStorage.getItem("ocv:project-cwd") ?? "")
+          : "");
+      if (!projectCwd) {
+        dbgWarn("chat", "init-project blocked: no cwd");
+        appendCommandOutput(t("init_noCwd"));
+        return;
+      }
+      // Remote target: sendMessage resolves cwd via getStoredRemoteCwd(host)
+      // (chat/+page.svelte:1968), not localStorage. The handoff below cannot
+      // bridge those paths. Guard remote until wave 4b unifies cwd resolution.
+      if (store.remoteHostName) {
+        dbgWarn("chat", "init-project blocked: remote not supported", {
+          host: store.remoteHostName,
+        });
+        appendCommandOutput(t("init_remoteNotSupported"));
+        return;
+      }
+      if (store.isRunning) {
+        dbgWarn("chat", "init-project blocked: turn running");
+        appendCommandOutput(t("init_busy"));
+        return;
+      }
+      try {
+        const exists = await api.agentsMdExists(projectCwd);
+        if (exists) {
+          dbgWarn("chat", "init-project blocked: AGENTS.md exists");
+          appendCommandOutput(t("init_alreadyExists"));
+          return;
+        }
+      } catch (err) {
+        dbgWarn("chat", "init: agentsMdExists failed", err);
+        appendCommandOutput(
+          `Failed to check AGENTS.md: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+      dbg("chat", "init-project requested", { cwd: projectCwd });
+      // Persist cwd so sendMessage's new-run path (+page.svelte:1976 reads
+      // localStorage only) starts the init run in the same directory the
+      // guard validated. Without this, a guard pass via projectInitStatus?.cwd
+      // or folderCwdOverride could disagree with sendMessage's resolution.
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("ocv:project-cwd", projectCwd);
+        window.dispatchEvent(new Event("ocv:cwd-changed"));
+      }
+      await sendMessage(CODEX_INIT_PROMPT, []);
+    } else if (action === "codex-agent-info") {
+      // Codex TUI's /agent opens a sub-agent picker (OpenAgentPicker). We
+      // don't have that UI yet; sub-agents nest inline as Agent tool calls.
+      // This handler just explains.
+      if (effectiveAgent !== "codex") return;
+      dbg("chat", "codex-agent-info");
+      appendCommandOutput(t("codexAgent_notSupported"));
+    } else if (action === "codex-review") {
+      // Codex /review v1: inject the "review uncommitted changes" prompt and
+      // let the model gather git diff + analyze. Same guard order as
+      // init-project. Picker for the other 3 review presets is wave 4b.
+      if (effectiveAgent !== "codex") return;
+      const projectCwd =
+        store.effectiveCwd ||
+        store.sessionCwd ||
+        store.run?.cwd ||
+        folderCwdOverride ||
+        projectInitStatus?.cwd ||
+        (typeof localStorage !== "undefined"
+          ? (localStorage.getItem("ocv:project-cwd") ?? "")
+          : "");
+      if (!projectCwd) {
+        dbgWarn("chat", "codex-review blocked: no cwd");
+        appendCommandOutput(t("codexReview_noCwd"));
+        return;
+      }
+      if (store.remoteHostName) {
+        dbgWarn("chat", "codex-review blocked: remote not supported", {
+          host: store.remoteHostName,
+        });
+        appendCommandOutput(t("codexReview_remoteNotSupported"));
+        return;
+      }
+      if (store.isRunning) {
+        dbgWarn("chat", "codex-review blocked: turn running");
+        appendCommandOutput(t("codexReview_busy"));
+        return;
+      }
+      dbg("chat", "codex-review requested", { cwd: projectCwd });
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("ocv:project-cwd", projectCwd);
+        window.dispatchEvent(new Event("ocv:cwd-changed"));
+      }
+      // Open the preset picker (uncommitted / base / commit / custom).
+      codexReviewPickerOpen = true;
+    } else if (action === "codex-login") {
+      if (effectiveAgent !== "codex") return; // defensive (generic gate already blocks)
+      if (store.isRunning) {
+        appendCommandOutput(t("codexLogin_busy"));
+        return;
+      }
+      appendCommandOutput(t("codexLogin_opening"));
+      try {
+        await api.runCodexLogin();
+        appendCommandOutput(t("codexLogin_success"));
+        // Settings page may be open — let it refresh its auth status.
+        window.dispatchEvent(new Event("ocv:codex-auth-changed"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbgWarn("chat", "codex login failed", err);
+        appendCommandOutput(t("codexLogin_failed", { error: msg }));
+      }
+    } else if (action === "codex-logout") {
+      if (effectiveAgent !== "codex") return;
+      if (store.isRunning) {
+        appendCommandOutput(t("codexLogin_busy"));
+        return;
+      }
+      try {
+        await api.runCodexLogout();
+        appendCommandOutput(t("codexLogout_success"));
+        window.dispatchEvent(new Event("ocv:codex-auth-changed"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbgWarn("chat", "codex logout failed", err);
+        appendCommandOutput(t("codexLogout_failed", { error: msg }));
+      }
+    } else if (action === "codex-compact") {
+      if (effectiveAgent !== "codex") return;
+      if (!store.run || !store.sessionAlive) {
+        appendCommandOutput(t("codexCompact_noSession"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("codexCompact_busy"));
+        return;
+      }
+      try {
+        await api.compactSession(store.run.id);
+        appendCommandOutput(t("codexCompact_done"));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbgWarn("chat", "codex compact failed", err);
+        appendCommandOutput(t("codexCompact_failed", { error: msg }));
+      }
+    } else if (action === "codex-rewind") {
+      if (effectiveAgent !== "codex") return;
+      if (!store.run || !store.sessionAlive) {
+        appendCommandOutput(t("codexRewind_noSession"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("codexRewind_busy"));
+        return;
+      }
+      if (store.userTurnCount === 0) {
+        appendCommandOutput(t("codexRewind_noTurns"));
+        return;
+      }
+      openCodexRewind();
+    } else if (action === "codex-goal") {
+      if (effectiveAgent !== "codex") return;
+      if (!store.run) {
+        appendCommandOutput(t("codexGoal_noSession"));
+        return;
+      }
+      goalPanelOpen = true;
+    }
+  }
+
+  async function handleStop() {
+    await store.stop();
+    window.dispatchEvent(new Event("ocv:runs-changed"));
+  }
+
+  async function handleResume(
+    mode: SessionMode,
+    overrideRunId?: string,
+    initialMessage?: string,
+    initialAttachments?: Attachment[],
+  ) {
+    const targetRunId = overrideRunId ?? store.run?.id;
+    if (!targetRunId || resuming) return;
+    resuming = true;
+
+    // Per-session platform: resume automatically uses run's saved platform_id
+    // via backend resolve_auth_env_for_platform() — no mismatch dialog needed.
+
+    // Fork: activate overlay immediately for progress feedback
+    if (mode === "fork") {
+      forkOverlay = { active: true, sourceRunId: targetRunId, startedAt: Date.now(), error: null };
+    }
+
+    try {
+      // Fork: don't subscribe to source — backend emits RunState(stopped)
+      // for the source which would interfere with the fork state machine.
+      if (mode !== "fork") {
+        middleware.subscribeCurrent(targetRunId, store);
+      }
+      const resultId = await store.resumeSession(
+        targetRunId,
+        mode,
+        initialMessage,
+        initialAttachments,
+      );
+      if (resultId) {
+        middleware.subscribeCurrent(resultId, store);
+        if (mode === "fork") {
+          // Check if user cancelled during fork_oneshot
+          if (!forkOverlay) {
+            dbg("chat", "fork: cancelled during fork_oneshot, skipping step 2");
+          } else {
+            // Step 1 complete — dismiss overlay, use normal session startup UI for step 2
+            forkOverlay = null;
+            goto(`/chat?run=${resultId}`, { replaceState: true });
+            // Step 2: establish stream-json connection (shows "Starting session..." spinner)
+            try {
+              await store.connectSession(resultId);
+            } catch (e) {
+              store.error = String(e);
+            }
+          }
+        } else {
+          goto(`/chat?run=${resultId}`, { replaceState: true });
+        }
+      } else if (mode === "fork") {
+        // Fork failed — don't clear overlay or navigate away.
+        // The phase watcher $effect will show the error in the overlay.
+        // User can Retry or Cancel from there.
+        dbg("chat", "fork failed, keeping overlay for retry/cancel");
+      } else {
+        // Non-fork resume failed — stay on the target run's view instead of
+        // navigating to blank new-session page (the run's history is still useful).
+        lastContinuableRun = null;
+        goto(`/chat?run=${targetRunId}`, { replaceState: true });
+      }
+      window.dispatchEvent(new Event("ocv:runs-changed"));
+    } catch (e) {
+      // Fork sync failure → show error in overlay instead of error bar
+      if (mode === "fork" && forkOverlay) {
+        forkOverlay = { ...forkOverlay, error: String(e) };
+      }
+    } finally {
+      resuming = false;
+    }
+  }
+
+  /** Stop the fork run's process (if it exists and isn't the source run). */
+  async function stopForkProcess(sourceRunId: string) {
+    if (store.run && store.run.id !== sourceRunId) {
+      try {
+        await api.stopSession(store.run.id);
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+
+  async function handleForkCancel() {
+    if (!forkOverlay) return;
+    const sourceRunId = forkOverlay.sourceRunId;
+    await stopForkProcess(sourceRunId);
+    forkOverlay = null;
+    store.error = "";
+    goto(`/chat?run=${sourceRunId}`, { replaceState: true });
+    // Explicit reload — URL may not change if we're returning to the same run
+    await loadRunProgressive(sourceRunId);
+    window.dispatchEvent(new Event("ocv:runs-changed"));
+  }
+
+  async function handleForkRetry() {
+    if (!forkOverlay || resuming) return;
+    const sourceRunId = forkOverlay.sourceRunId;
+    await stopForkProcess(sourceRunId);
+    forkOverlay = { active: true, sourceRunId, startedAt: Date.now(), error: null };
+    store.error = "";
+    await handleResume("fork", sourceRunId);
+  }
+
+  // ── Chat-level toast (same pattern as PromptInput's showFileToast) ──
+  let chatToast = $state<string | null>(null);
+  let chatToastTimeout: ReturnType<typeof setTimeout> | null = null;
+  function showChatToast(msg: string) {
+    chatToast = msg;
+    if (chatToastTimeout) clearTimeout(chatToastTimeout);
+    chatToastTimeout = setTimeout(() => {
+      chatToast = null;
+    }, 2500);
+  }
+
+  async function toggleCliConfigBool(key: string) {
+    try {
+      const config = await api.getCliConfig();
+      const current = config[key] === true;
+      await api.updateCliConfig({ [key]: !current });
+      dbg("chat", `toggled ${key}`, { from: current, to: !current });
+      // Immediately mirror UI state
+      if (key === "fastMode") {
+        store.fastModeState = !current ? "on" : "";
+        dbg("chat", "fastMode UI mirrored", { state: store.fastModeState });
+      } else if (key === "verbose") {
+        verboseEnabled = !current;
+        dbg("chat", "verbose UI mirrored", { verbose: verboseEnabled });
+      }
+      const label =
+        key === "fastMode"
+          ? !current
+            ? "toast_fastModeOn"
+            : "toast_fastModeOff"
+          : !current
+            ? "toast_verboseOn"
+            : "toast_verboseOff";
+      showChatToast(t(label as Parameters<typeof t>[0]));
+    } catch (e) {
+      dbgWarn("chat", `toggle ${key} failed:`, e);
+    }
+  }
+
+  // Chat keybinding callbacks — registered/unregistered via keybindingStore in onMount below
+
+  // ── Page-level drag-drop (Tauri native events) ──
+  let pageDragActive = $state(false);
+  let dragProcessingCount = $state(0);
+  let dragProcessing = $derived(dragProcessingCount > 0);
+
+  // Safety net: the native `tauri://drag-leave` / `drag-drop` events can be dropped on some
+  // platforms/webviews, leaving pageDragActive stuck true → the z-50 hover overlay swallows
+  // every click and the whole UI looks frozen. A pointerdown cannot reach the webview while an
+  // OS file-drag is in progress, so receiving one means the drag is over — force-clear the
+  // stale hover. Escape does the same. Does NOT touch dragProcessing (real in-flight work).
+  $effect(() => {
+    function clearStaleHover() {
+      if (pageDragActive) {
+        pageDragActive = false;
+        dbg("chat", "drag-hover safety-net cleared stale pageDragActive");
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") clearStaleHover();
+    }
+    window.addEventListener("pointerdown", clearStaleHover);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", clearStaleHover);
+      window.removeEventListener("keydown", onKey);
+    };
+  });
+
+  /** Concurrency-limited parallel map returning PromiseSettledResult for each item. */
+  async function handleTauriDrop(payload: { paths: string[] }) {
+    pageDragActive = false;
+    const paths = payload.paths;
+    const input = promptRef; // cache ref — promptRef may become undefined after awaits
+    if (!paths?.length || !input) return;
+
+    dragProcessingCount++;
+    dbg("chat", "tauri-drop", { count: paths.length });
+
+    try {
+      // Phase 1: parallel classify (concurrency=5 to avoid IPC flood on large batches)
+      const classified = await mapSettled(
+        paths,
+        async (p) => {
+          const name = p.split(/[/\\]/).pop() || "file";
+          const isDir = await api.checkIsDirectory(p);
+          return { p, name, isDir };
+        },
+        5,
+      );
+
+      const dirRefs: Array<{ path: string; name: string; isDir: true }> = [];
+      const fileEntries: Array<{ p: string; name: string }> = [];
+
+      for (let i = 0; i < classified.length; i++) {
+        const result = classified[i];
+        const p = paths[i];
+        const name = p.split(/[/\\]/).pop() || "file";
+        if (result.status === "fulfilled") {
+          if (result.value.isDir) {
+            dirRefs.push({ path: p, name, isDir: true });
+            dbg("chat", "tauri-drop: dir", { name });
+          } else {
+            fileEntries.push({ p, name });
+          }
+        } else {
+          // checkIsDirectory IPC failed — conservatively treat as file
+          fileEntries.push({ p, name });
+          dbgWarn("chat", "tauri-drop: classify failed, treating as file", {
+            name,
+            error: result.reason,
+          });
+        }
+      }
+
+      // Phase 2: parallel file read (concurrency=2 to limit memory).
+      // Pass project cwd to read_file_base64 so the backend can validate the
+      // path is inside an allowed root. Files outside the project will reject
+      // — the existing "rejected → path ref" fallback below handles that
+      // gracefully so the user still gets the attachment as a path reference.
+      const dropCwd = store.sessionCwd || store.run?.cwd || "";
+      const fileResults = await mapSettled(
+        fileEntries,
+        async ({ p, name }) => {
+          const [base64, mime] = await api.readFileBase64(p, dropCwd);
+          const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+          return { file: new File([bytes], name, { type: mime }), name, mime, size: bytes.length };
+        },
+        2,
+      );
+
+      const filesToProcess: File[] = [];
+      const fileRefs: Array<{ path: string; name: string; isDir: false }> = [];
+
+      for (let i = 0; i < fileResults.length; i++) {
+        const result = fileResults[i];
+        const { p, name } = fileEntries[i];
+        if (result.status === "fulfilled") {
+          filesToProcess.push(result.value.file);
+          dbg("chat", "tauri-drop: file", {
+            name: result.value.name,
+            mime: result.value.mime,
+            size: result.value.size,
+          });
+        } else {
+          fileRefs.push({ path: p, name, isDir: false });
+          dbgWarn("chat", "tauri-drop: fallback to path ref", { name, error: result.reason });
+        }
+      }
+
+      // Guard: if page navigated away during processing, promptRef is stale
+      if (promptRef !== input) {
+        dbgWarn("chat", "tauri-drop: promptRef stale after processing, discarding");
+        return;
+      }
+
+      // Add path refs (dirs + failed files)
+      const allPathRefs = [...dirRefs, ...fileRefs];
+      if (allPathRefs.length > 0) {
+        input.addPathRefs(allPathRefs);
+      }
+
+      // Normal files → existing addFiles pipeline (await so spinner covers processFiles)
+      if (filesToProcess.length > 0) {
+        await input.addFiles(filesToProcess);
+      }
+
+      // Single summary toast
+      if (allPathRefs.length > 0) {
+        const parts: string[] = [];
+        if (dirRefs.length > 0) {
+          parts.push(t("drag_foldersInserted", { count: String(dirRefs.length) }));
+        }
+        if (fileRefs.length > 0) {
+          parts.push(t("drag_filesAsPathRef", { count: String(fileRefs.length) }));
+        }
+        input.showToast(parts.join(t("common_listSeparator")));
+      }
+    } finally {
+      dragProcessingCount--;
+    }
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+  }
+
+  async function scrollToTool(toolUseId: string) {
+    // Clear filter first — target may be filtered out, and burst/visible indices
+    // depend on the unfiltered timeline.
+    if (toolFilter) {
+      toolFilter = null;
+      await tick();
+    }
+    // Locate target in the data layer (DOM may not be mounted yet under progressive render).
+    const ft = filteredTimeline;
+    const ftIdx = ft.findIndex((e) => e.kind === "tool" && e.tool.tool_use_id === toolUseId);
+    if (ftIdx < 0) return;
+    expandRenderLimitTo(ftIdx);
+    await tick();
+    // Re-map to visibleTimeline-local index for burst expansion.
+    const visibleIdx = visibleTimeline.findIndex(
+      (e) => e.kind === "tool" && e.tool.tool_use_id === toolUseId,
+    );
+    if (visibleIdx >= 0) await ensureBurstExpandedFor(visibleIdx);
+    const el = document.getElementById("tool-" + toolUseId);
+    if (el) {
+      // Temporarily disable content-visibility so the browser knows real heights and
+      // scrollIntoView lands at the correct offset (mirrors scrollToMessage).
+      const container = chatAreaRef;
+      const cvEls = container
+        ? Array.from(container.querySelectorAll<HTMLElement>(".cv-auto"))
+        : [];
+      for (const c of cvEls) c.style.contentVisibility = "visible";
+      el.getBoundingClientRect();
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ring-2", "ring-primary/50");
+      requestAnimationFrame(() => {
+        for (const c of cvEls) c.style.contentVisibility = "";
+      });
+      setTimeout(() => el.classList.remove("ring-2", "ring-primary/50"), 2000);
+    }
+  }
+
+  async function scrollToMessage(ts: string) {
+    dbg("chat", "scrollToMessage", { ts });
+    if (toolFilter) {
+      toolFilter = null;
+      await tick();
+    }
+    // Resolve target from data — `ts` may be ts, anchorId, cliUuid, or id.
+    const match = store.timeline.find(
+      (e) =>
+        e.ts === ts || e.anchorId === ts || (e.kind === "user" && e.cliUuid === ts) || e.id === ts,
+    );
+    if (!match) return;
+    const ft = filteredTimeline;
+    const ftIdx = ft.findIndex((e) => e.id === match.id);
+    if (ftIdx < 0) return;
+    expandRenderLimitTo(ftIdx);
+    await tick();
+    const visibleIdx = visibleTimeline.findIndex((e) => e.id === match.id);
+    if (visibleIdx >= 0) await ensureBurstExpandedFor(visibleIdx);
+    // DOM id uses anchorId (see `id="msg-{entry.anchorId}"` in the each block).
+    const el = document.getElementById("msg-" + match.anchorId);
+    if (el) {
+      // Temporarily disable content-visibility on ALL entries so the browser
+      // knows real heights and scrollIntoView lands at the correct offset.
+      const container = chatAreaRef;
+      const cvEls = container
+        ? Array.from(container.querySelectorAll<HTMLElement>(".cv-auto"))
+        : [];
+      for (const c of cvEls) c.style.contentVisibility = "visible";
+
+      el.getBoundingClientRect(); // force reflow
+      el.scrollIntoView({ behavior: "instant", block: "center" });
+      el.classList.add("ring-2", "ring-primary/50");
+
+      // Restore content-visibility after scroll settles
+      requestAnimationFrame(() => {
+        for (const c of cvEls) c.style.contentVisibility = "";
+      });
+      setTimeout(() => {
+        el!.classList.remove("ring-2", "ring-primary/50");
+      }, 2000);
+    } else {
+      dbg("chat", "scrollToMessage: element not found", { anchor: ts });
+    }
+  }
+
+  async function handleToolAnswer(toolUseId: string, answer: string) {
+    await store.answerToolQuestion(toolUseId, answer);
+  }
+
+  function handleRewind() {
+    if (!store.run || !store.sessionAlive || store.isRunning) return;
+    rewindModalOpen = true;
+  }
+
+  function handleRewindToMessage(entry: { cliUuid: string; content: string; ts: string }) {
+    if (!store.run || !store.sessionAlive || store.isRunning) return;
+    rewindDirectTarget = {
+      cliUuid: entry.cliUuid,
+      content: entry.content,
+      ts: entry.ts,
+      timelineIndex: store.timeline.findIndex(
+        (e) => e.kind === "user" && e.cliUuid === entry.cliUuid,
+      ),
+    };
+    rewindModalOpen = true;
+  }
+
+  async function handleToolApprove(toolName: string) {
+    if (!store.run) return;
+    approving = true;
+    dbg("chat", "approving tool", { runId: store.run.id, toolName });
+    try {
+      await api.approveSessionTool(store.run.id, toolName);
+    } catch (e) {
+      dbgWarn("chat", "approve failed:", e);
+      store.error = String(e);
+    } finally {
+      // approving resets when new RunState events arrive (spawning/running)
+      setTimeout(() => {
+        approving = false;
+      }, 3000);
+    }
+  }
+
+  async function handlePermissionRespond(
+    requestId: string,
+    behavior: "allow" | "deny",
+    updatedPermissions?: import("$lib/types").PermissionSuggestion[],
+    updatedInput?: Record<string, unknown>,
+    denyMessage?: string,
+    interrupt?: boolean,
+  ) {
+    if (!store.run || !store.sessionAlive) return;
+    const runId = store.run.id; // snapshot — store.run may change after await
+    dbg("chat", "inline permission respond", {
+      runId,
+      requestId,
+      behavior,
+      updatedPermissions,
+      updatedInput,
+      denyMessage,
+      interrupt,
+    });
+    try {
+      // Set pending mode override BEFORE responding (so reducer picks it up)
+      if (behavior === "allow" && updatedPermissions) {
+        const modePerm = updatedPermissions.find((p) => p.type === "setMode");
+        if (modePerm && modePerm.mode) {
+          store.pendingPermissionModeOverride = modePerm.mode;
+          dbg("chat", "set pendingPermissionModeOverride", { mode: modePerm.mode });
+        }
+      }
+
+      await api.respondPermission(
+        runId,
+        requestId,
+        behavior,
+        updatedPermissions,
+        updatedInput,
+        denyMessage,
+        interrupt,
+      );
+      // Optimistic resolve + clear attention flag
+      resolvePermissionOptimistic(store, runId, requestId, behavior);
+    } catch (e) {
+      dbgWarn("chat", "permission respond failed:", e);
+      // If the CLI rejected the response (e.g. session already idle after interrupt),
+      // still resolve the card locally so buttons are removed.
+      if (behavior === "deny") {
+        resolvePermissionOptimistic(store, runId, requestId, "deny");
+      }
+      // allow failure: don't change status — submitting timeout auto-resets (§5)
+      store.error = String(e);
+      throw e; // Let component-side wrapper catch and unlock buttons
+    }
+  }
+
+  async function handleElicitationRespond(
+    requestId: string,
+    action: "accept" | "decline" | "cancel",
+    content?: Record<string, unknown>,
+  ) {
+    if (!store.run || !store.sessionAlive) return;
+    const runId = store.run.id;
+    dbg("chat", "elicitation respond", { runId, requestId, action });
+    try {
+      await api.respondElicitation(runId, requestId, action, content);
+      // Cleanup after successful response — not optimistic, avoids card loss on failure
+      const { resolveElicitationOptimistic } = await import("$lib/utils/resolve-elicitation");
+      resolveElicitationOptimistic(store, runId, requestId);
+    } catch (e) {
+      dbgWarn("chat", "elicitation respond failed:", e);
+      store.error = String(e);
+    }
+  }
+
+  // O(1) lookup: timeline entry id → index
+  let timelineIdIndex = $derived.by(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < store.timeline.length; i++) {
+      map.set(store.timeline[i].id, i);
+    }
+    return map;
+  });
+
+  // ID of the last context-cleared separator (for dimming messages above it)
+  let lastClearSepId = $derived.by(() => {
+    for (let i = store.timeline.length - 1; i >= 0; i--) {
+      const e = store.timeline[i];
+      if (e.kind === "separator" && e.content === CONTEXT_CLEARED_MARKER) return e.id;
+    }
+    return null;
+  });
+
+  // Latest plan tool card's tool_use_id (for auto-expand)
+  let latestPlanToolId = $derived.by(() => {
+    for (let i = store.timeline.length - 1; i >= 0; i--) {
+      const e = store.timeline[i];
+      if (e.kind !== "tool" || !e.tool) continue;
+      const fp = String(e.tool.input?.file_path ?? e.tool.input?.path ?? "");
+      if ((e.tool.tool_name === "Write" || e.tool.tool_name === "Edit") && isPlanFilePath(fp)) {
+        return e.tool.tool_use_id;
+      }
+    }
+    return null;
+  });
+
+  function getPlanContentForExitPlan(
+    entryId: string,
+  ): { content: string; fileName: string } | null {
+    const idx = timelineIdIndex.get(entryId);
+    if (idx == null) {
+      dbgWarn("chat", "ExitPlanMode entry not found in timeline index", { id: entryId });
+      return null;
+    }
+    const result = extractPlanContent(store.timeline, idx);
+    if (result) return result;
+    // Fallback: use tool_use_result.plan (--permission-mode=plan auto-approves
+    // ExitPlanMode without Write, plan content is in the result directly)
+    const entry = store.timeline[idx];
+    if (entry?.kind === "tool" && entry.tool.status === "success") {
+      const toolResult = entry.tool.tool_use_result as
+        | { plan?: string; filePath?: string }
+        | undefined;
+      if (toolResult?.plan && typeof toolResult.plan === "string") {
+        const fp = String(toolResult.filePath ?? "");
+        const name = isPlanFilePath(fp) ? (planFileName(fp) ?? "plan") : "plan";
+        return { content: toolResult.plan, fileName: name };
+      }
+    }
+    return null;
+  }
+
+  /** Get the latest plan content for an approved ExitPlanMode card.
+   *  Applies subsequent Edits to the approved plan content. */
+  async function handleExitPlanClearContext() {
+    if (!store.run) return;
+    const runId = store.run.id;
+    const cwd = localStorage.getItem("ocv:project-cwd") || "";
+    dbg("chat", "ExitPlanMode: clear context + auto-accept");
+
+    // Find the ExitPlanMode tool's permission request ID from timeline
+    const exitPlanEntry = store.timeline.find(
+      (e) =>
+        e.kind === "tool" &&
+        e.tool.tool_name === "ExitPlanMode" &&
+        e.tool.status === "permission_prompt" &&
+        e.tool.permission_request_id,
+    );
+    if (!exitPlanEntry || exitPlanEntry.kind !== "tool") return;
+    const requestId = exitPlanEntry.tool.permission_request_id!;
+
+    try {
+      // 1. Set flags BEFORE responding
+      store.pendingPermissionModeOverride = "acceptEdits";
+      store.pendingClearContextPlan = "__pending__"; // marker: waiting for tool_end
+
+      // 2. Allow ExitPlanMode (with setMode) — satisfies the control_response requirement
+      await api.respondPermission(
+        runId,
+        requestId,
+        "allow",
+        [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
+        exitPlanEntry.tool.input,
+      );
+      resolvePermissionOptimistic(store, runId, requestId, "allow");
+
+      // 3. Wait for tool_end to deliver plan content (via pendingClearContextPlan)
+      //    Poll briefly — tool_end should arrive within a few hundred ms
+      let planContent: string | null = null;
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        if (store.pendingClearContextPlan && store.pendingClearContextPlan !== "__pending__") {
+          planContent = store.pendingClearContextPlan;
+          break;
+        }
+      }
+      store.pendingClearContextPlan = null;
+
+      if (!planContent) {
+        dbgWarn("chat", "ExitPlanMode: timed out waiting for plan content");
+        // Fallback: continue in current session (ExitPlanMode already allowed)
+        return;
+      }
+
+      // 4. Interrupt + stop current session
+      await api.interruptSession(runId).catch(() => {});
+      await api.stopSession(runId);
+      dbg("chat", "ExitPlanMode: session stopped");
+
+      // 5. Navigate to fresh chat URL, then start a new session inline.
+      //    Using sessionStorage + onMount doesn't work: /chat?run=X → /chat
+      //    is the same route component and onMount won't re-fire.
+      //    permissionModeOverride threads through api.startSession → backend
+      //    adapter_settings, so the CLI spawns with --permission-mode acceptEdits
+      //    and the first "Implement..." turn runs in auto-accept (not plan).
+      const planPrompt = `Implement the following plan:\n\n${planContent}`;
+      await goto("/chat", { replaceState: true });
+      await tick(); // let runId effect run loadRun("") → store.reset()
+      const newRunId = await store.startSession(planPrompt, cwd, [], "acceptEdits");
+      await goto(`/chat?run=${newRunId}`, { replaceState: true });
+      dbg("chat", "ExitPlanMode: new session started", { newRunId });
+    } catch (e) {
+      dbgWarn("chat", "ExitPlanMode clear context failed:", e);
+      store.pendingClearContextPlan = null;
+      store.error = String(e);
+      throw e; // Let component-side wrapper catch and unlock buttons
+    }
+  }
+
+  async function handleHookCallbackRespond(requestId: string, decision: "allow" | "deny") {
+    if (!store.run) return;
+    dbg("chat", "hook callback respond", { runId: store.run.id, requestId, decision });
+    try {
+      await api.respondHookCallback(store.run.id, requestId, decision);
+      // Update hook event status in store
+      store.hookEvents = store.hookEvents.map((h) =>
+        h.request_id === requestId
+          ? { ...h, status: decision === "allow" ? ("allowed" as const) : ("denied" as const) }
+          : h,
+      );
+    } catch (e) {
+      dbgWarn("chat", "hook callback respond failed:", e);
+      store.error = String(e);
+    }
+  }
+</script>
+
+{#snippet initHintCard()}
+  {#if showInitHint}
+    <div class="mt-3 flex items-center gap-2 text-[11px] text-amber-400/80">
+      <svg
+        class="h-3.5 w-3.5 shrink-0"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M12 9v4" /><path d="M12 17h.01" />
+        <path d="M3.6 15.4 10.2 4a2 2 0 0 1 3.6 0l6.6 11.4a2 2 0 0 1-1.8 3H5.4a2 2 0 0 1-1.8-3Z" />
+      </svg>
+      <span>
+        Run
+        <button
+          class="font-mono text-amber-300 hover:text-amber-200 underline underline-offset-2 transition-colors"
+          onclick={() => {
+            // Codex /init is a virtual handled by OpenCovibe (writes AGENTS.md
+            // via injected prompt). Claude /init is a CLI command — sending
+            // "/init" as a message lets Claude CLI handle it natively.
+            if (effectiveAgent === "codex") {
+              void handleVirtualCommand("init-project", "");
+            } else {
+              void sendMessage("/init", []);
+            }
+          }}>{t("chat_initHintAction")}</button
+        >
+        {effectiveAgent === "codex"
+          ? t("chat_initHintTargetAgents")
+          : t("chat_initHintTargetClaude")}
+      </span>
+      <button
+        class="ml-auto text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors"
+        onclick={dismissInitHint}
+        title={t("chat_initHintDismiss")}
+      >
+        <svg
+          class="h-3 w-3"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </button>
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet heroMetaItems()}
+  {#if heroCliVersion}
+    <button
+      class="tabular-nums hover:text-muted-foreground transition-colors"
+      onclick={() => goto("/release-notes")}
+    >
+      {t("chat_cliVersion").replace("{version}", heroCliVersion)}
+    </button>
+    {#if heroHasUpdate}
+      <span class="text-primary/70">·</span>
+      <button
+        class="text-primary/70 hover:text-primary transition-colors"
+        onclick={() => goto("/release-notes")}
+        title={t("chat_cliUpdateAvailable").replace("{version}", channelLatest!)}
+      >
+        {t("chat_cliUpdateAvailable").replace("{version}", channelLatest!)}
+      </button>
+    {/if}
+  {/if}
+  {#if remoteHosts.length > 0}
+    {#if heroCliVersion}
+      <span class="text-muted-foreground">·</span>
+    {/if}
+    <div class="relative inline-flex items-center">
+      {#if targetDropdownOpen}
+        <!-- Invisible backdrop to close dropdown on outside click -->
+        <div class="fixed inset-0 z-40" onclick={() => (targetDropdownOpen = false)}></div>
+      {/if}
+      <button
+        class="inline-flex items-center gap-1 cursor-pointer text-xs {store.remoteHostName
+          ? 'text-blue-400/70 hover:text-blue-400'
+          : 'text-muted-foreground hover:text-foreground'} transition-colors"
+        onclick={() => (targetDropdownOpen = !targetDropdownOpen)}
+      >
+        <svg
+          class="h-3 w-3 shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect width="20" height="14" x="2" y="3" rx="2" /><line
+            x1="8"
+            y1="21"
+            x2="16"
+            y2="21"
+          /><line x1="12" y1="17" x2="12" y2="21" />
+        </svg>
+        <span>{store.remoteHostName || t("chat_local")}</span>
+        <svg
+          class="h-2.5 w-2.5 opacity-60"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"><path d="m6 9 6 6 6-6" /></svg
+        >
+      </button>
+      {#if targetDropdownOpen}
+        <div
+          class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded-md border border-border bg-popover py-1 shadow-md z-50"
+        >
+          <button
+            class="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs {!store.remoteHostName
+              ? 'text-foreground font-medium'
+              : 'text-foreground/70 hover:bg-accent'} transition-colors"
+            onclick={() => {
+              store.remoteHostName = null;
+              setLastTarget(null);
+              dbg("chat", "target changed", "local");
+              targetDropdownOpen = false;
+            }}
+          >
+            {t("chat_local")}
+          </button>
+          {#each remoteHosts as host (host.name)}
+            <button
+              class="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs {store.remoteHostName ===
+              host.name
+                ? 'text-foreground font-medium'
+                : 'text-foreground/70 hover:bg-accent'} transition-colors"
+              onclick={() => {
+                store.remoteHostName = host.name;
+                setLastTarget(host.name);
+                dbg("chat", "target changed", host.name);
+                targetDropdownOpen = false;
+              }}
+            >
+              {host.name} ({host.user}@{host.host})
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet heroMetaFooter()}
+  <div class="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+    {@render heroMetaItems()}
+  </div>
+{/snippet}
+
+<div class="flex h-full overflow-hidden bg-background relative">
+  <!-- Page-level drag overlay (drag-hover or processing spinner) -->
+  {#if pageDragActive || dragProcessing}
+    <div
+      class="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-[2px]"
+    >
+      <div
+        class="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-primary/50 bg-primary/5 px-12 py-8"
+      >
+        {#if dragProcessing}
+          <svg
+            class="h-8 w-8 text-primary/60 animate-spin"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          <span class="text-sm font-medium text-primary/70">{t("drag_processing")}</span>
+        {:else}
+          <svg
+            class="h-8 w-8 text-primary/60"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" x2="12" y1="3" y2="15" />
+          </svg>
+          <span class="text-sm font-medium text-primary/70">{t("prompt_dropFiles")}</span>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Main content area -->
+  <div class="flex flex-1 flex-col min-w-0 relative">
+    <!-- Status bar -->
+    <SessionStatusBar
+      bind:this={statusBarRef}
+      running={store.sessionAlive}
+      run={store.run}
+      agent={store.run?.agent ?? store.agent}
+      model={effectiveAgent === "codex"
+        ? codexDisplayModel(store.run?.model) ||
+          codexDisplayModel(store.model) ||
+          getCodexDefaultModel() ||
+          ""
+        : store.model}
+      cost={store.usage.cost}
+      inputTokens={cumulativeTokens.input}
+      outputTokens={cumulativeTokens.output}
+      cacheReadTokens={cumulativeTokens.cacheRead}
+      cacheWriteTokens={cumulativeTokens.cacheWrite}
+      parentRunId={store.run?.parent_run_id}
+      onEndSession={handleStop}
+      onFork={forkOverlay ? undefined : () => handleResume("fork")}
+      onModelChange={handleModelChange}
+      effort={store.features.effortSelector ? currentEffort : undefined}
+      onEffortChange={store.features.effortSelector ? handleEffortChange : undefined}
+      onNavigateParent={store.run?.parent_run_id
+        ? () => goto(`/chat?run=${store.run!.parent_run_id}`)
+        : undefined}
+      cwd={store.effectiveCwd}
+      onToggleSidebar={toggleLayoutSidebar}
+      mcpServers={store.mcpServers}
+      onMcpToggle={() => (mcpPanelOpen = !mcpPanelOpen)}
+      cliVersion={effectiveAgent === "codex" ? (getCodexVersion() ?? "") : store.cliVersion}
+      permissionMode={store.features.permissionModeSwitch ? store.permissionMode : undefined}
+      {platformModels}
+      fastModeState={store.fastModeState}
+      verbose={verboseEnabled}
+      numTurns={store.userTurnCount}
+      contextTokens={store.contextTokens}
+      durationMs={store.durationMs}
+      persistedFiles={store.persistedFiles}
+      onRewind={store.caps.supportsSnapshots && store.sessionAlive && !store.isRunning
+        ? handleRewind
+        : undefined}
+      onCodexRewind={effectiveAgent === "codex" &&
+      store.sessionAlive &&
+      !store.isRunning &&
+      store.userTurnCount > 0
+        ? openCodexRewind
+        : undefined}
+      contextUtilization={store.contextUtilization}
+      contextWarningLevel={store.contextWarningLevel}
+      contextWindow={store.contextWindow}
+      lastCompactedAt={store.lastCompactedAt}
+      compactCount={store.compactCount}
+      microcompactCount={store.microcompactCount}
+      turnUsages={store.turnUsages}
+      activeTaskCount={store.activeBackgroundTasks.length}
+      mode={store.run ? (store.useStreamSession ? "Stream" : "CLI") : ""}
+      toolsCount={sidebarCollapsed ? sidebarToolsCount : 0}
+      onToolsClick={sidebarCollapsed ? toggleSidebar : undefined}
+      remoteHostName={store.remoteHostName}
+      onRename={store.run ? handleRename : undefined}
+      authSourceLabel={store.authSourceLabel}
+      authSourceCategory={store.authSourceCategory}
+      apiKeySource={store.apiKeySource}
+      {previewOpen}
+      onPreviewToggle={() => {
+        if (previewOpen && !previewUrlBarOpen) {
+          closePreview();
+        } else {
+          previewUrlBarOpen = !previewUrlBarOpen;
+          if (previewUrlBarOpen) {
+            requestAnimationFrame(() => {
+              const el = document.querySelector<HTMLInputElement>("#__preview-url-input");
+              el?.focus();
+              el?.select();
+            });
+          }
+        }
+      }}
+      onStatusClick={() => {
+        if (!hasSidebarData) return;
+        if (sidebarCollapsed) sidebarCollapsed = false;
+        sidebarRequestedTab = "info";
+      }}
+      onExportHtml={store.run ? () => void handleExportHtml() : undefined}
+    />
+
+    <!-- MCP panel (floating below status bar) -->
+    {#if mcpPanelOpen && store.mcpServers.length > 0}
+      <div class="absolute {statusBarExpanded ? 'top-16' : 'top-9'} right-3 z-30">
+        <McpStatusPanel
+          runId={store.run?.id ?? ""}
+          mcpServers={store.mcpServers}
+          sessionAlive={store.sessionAlive}
+          agent={effectiveAgent}
+          onClose={() => (mcpPanelOpen = false)}
+          onServersUpdate={(servers) => {
+            store.updateMcpServers(servers);
+          }}
+        />
+      </div>
+    {/if}
+
+    <!-- Codex turn diff pill (floating below status bar). Only Codex turns push an
+         aggregated diff; show the affordance once store.turnDiff is non-empty. -->
+    {#if effectiveAgent === "codex" && store.turnDiff.trim()}
+      <div class="absolute {statusBarExpanded ? 'top-16' : 'top-9'} right-3 z-30">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-full border border-border bg-background/90 px-2.5 py-1 text-xs font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted/60 transition-colors"
+          onclick={() => {
+            dbg("chat", "turn diff open", { len: store.turnDiff.length });
+            turnDiffOpen = true;
+          }}
+          title="View the aggregated diff for the current turn"
+        >
+          <svg
+            class="h-3.5 w-3.5 text-muted-foreground"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          >
+            <path d="M9 3v18M3 9h18M3 15h18" />
+          </svg>
+          Turn diff
+        </button>
+      </div>
+    {/if}
+
+    <!-- Codex features pill + panel (floating below status bar). Live Codex session only —
+         experimentalFeature/list needs an app-server connection. Offset left of the turn-diff
+         pill (right-3) so the two affordances don't collide. -->
+    {#if effectiveAgent === "codex" && store.sessionAlive && store.run}
+      {@const featuresRight = store.turnDiff.trim() ? "right-28" : "right-3"}
+      <div class="absolute {statusBarExpanded ? 'top-16' : 'top-9'} {featuresRight} z-30">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-full border border-border bg-background/90 px-2.5 py-1 text-xs font-medium text-foreground shadow-sm backdrop-blur hover:bg-muted/60 transition-colors {featuresPanelOpen
+            ? 'bg-muted/60'
+            : ''}"
+          onclick={() => {
+            featuresPanelOpen = !featuresPanelOpen;
+            dbg("features", "toggle panel", { open: featuresPanelOpen });
+          }}
+          title={t("features_title")}
+        >
+          <svg
+            class="h-3.5 w-3.5 text-muted-foreground"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1" />
+            <circle cx="12" cy="12" r="3.5" />
+          </svg>
+          {t("features_title")}
+        </button>
+      </div>
+      {#if featuresPanelOpen}
+        <div class="absolute {statusBarExpanded ? 'top-24' : 'top-16'} right-3 z-40">
+          <FeaturesPanel
+            runId={store.run.id}
+            sessionAlive={store.sessionAlive}
+            onClose={() => (featuresPanelOpen = false)}
+          />
+        </div>
+      {/if}
+    {/if}
+
+    <!-- Preview URL input bar -->
+    {#if previewUrlBarOpen}
+      <div class="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-muted/30 text-xs">
+        <svg
+          class="w-3.5 h-3.5 shrink-0 text-muted-foreground"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <circle cx="12" cy="12" r="10" /><path
+            d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+          />
+        </svg>
+        <input
+          id="__preview-url-input"
+          type="text"
+          bind:value={previewUrlInput}
+          placeholder="http://localhost:3000"
+          class="flex-1 bg-transparent border-none outline-none text-xs text-foreground placeholder:text-muted-foreground/50 font-mono"
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              const url = previewUrlInput.trim();
+              if (url) {
+                openPreviewAndNotify(url).then((ok) => {
+                  if (ok) previewUrlBarOpen = false;
+                });
+              }
+            } else if (e.key === "Escape") {
+              previewUrlBarOpen = false;
+            }
+          }}
+        />
+        {#if previewOpen}
+          <button
+            onclick={() => {
+              closePreview();
+              previewUrlBarOpen = false;
+            }}
+            class="px-2 py-0.5 rounded text-xs bg-muted hover:bg-accent text-foreground transition-colors"
+          >
+            {t("preview_close")}
+          </button>
+        {/if}
+        <button
+          onclick={() => {
+            previewUrlBarOpen = false;
+          }}
+          class="text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <svg
+            class="w-3.5 h-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
+          >
+        </button>
+      </div>
+    {/if}
+
+    <!-- Main area -->
+    <div class="flex-1 overflow-hidden relative">
+      {#if store.useChatTimeline}
+        <!-- API / Codex bus-events mode: chat messages -->
+        <div
+          class="h-full overflow-y-auto"
+          style="overflow-anchor:auto"
+          bind:this={chatAreaRef}
+          onscroll={handleChatScroll}
+        >
+          {#if welcomeVisible}
+            <!-- Welcome state -->
+            <div class="flex h-full items-center justify-center">
+              <div class="flex flex-col items-center max-w-sm">
+                <div class="text-center animate-slide-up">
+                  <img src="/logo.png?v=2" alt="OC" class="mx-auto mb-4 h-12 w-12 rounded-2xl" />
+                  <h2 class="text-lg font-semibold text-primary mb-1">{t("layout_appName")}</h2>
+                  {#if codexWarning}
+                    <p class="text-amber-500 text-sm mb-3 px-2">{codexWarning}</p>
+                  {/if}
+                  {#if !store.run}
+                    {@const welcomeCwd =
+                      store.effectiveCwd ||
+                      folderCwdOverride ||
+                      localStorage.getItem("ocv:project-cwd") ||
+                      ""}
+                    {#if welcomeCwd}
+                      <p
+                        class="mb-3 text-xs text-muted-foreground/60 truncate max-w-[280px]"
+                        title={welcomeCwd}
+                      >
+                        {cwdDisplayLabel(welcomeCwd)}
+                      </p>
+                    {:else}
+                      <div class="mb-3"></div>
+                    {/if}
+                  {:else}
+                    <div class="mb-3"></div>
+                  {/if}
+                  {#if lastContinuableRun}
+                    <button
+                      class="w-full flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm text-foreground hover:bg-accent hover:border-ring/30 transition-all duration-150"
+                      onclick={() => goto(`/chat?run=${lastContinuableRun!.id}&resume=continue`)}
+                    >
+                      <svg
+                        class="h-4 w-4 text-muted-foreground"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg
+                      >
+                      {t("chat_continueLastSession")}
+                    </button>
+                    <p class="mt-2 text-xs text-muted-foreground">
+                      {t("chat_orTypeToStart")}
+                    </p>
+                  {:else}
+                    <p class="text-sm text-muted-foreground">{t("chat_typeToStart")}</p>
+                  {/if}
+                  {@render initHintCard()}
+                </div>
+                <!-- Footer outside animate-slide-up: AuthSourceBadge needs transform-free ancestor for fixed dropdown -->
+                <div
+                  class="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
+                >
+                  <!-- Agent switcher in the hero, synced with the composer's AgentSelector
+                       (both call handleAgentChange → store.agent). Switching here also swaps the
+                       auth badge below (OAuth / API Key, per agent). -->
+                  <AgentSelector value={effectiveAgent} onchange={(a) => handleAgentChange(a)} />
+                  <span class="text-muted-foreground">·</span>
+                  <AgentAuthBadge
+                    agent={effectiveAgent}
+                    {authOverview}
+                    onAuthModeChange={handleAuthModeChange}
+                    codexProvider={settings?.codex_provider ?? null}
+                    onChanged={async () => {
+                      settings = await api.getUserSettings();
+                    }}
+                    hasRun={false}
+                    variant="hero"
+                  />
+                  <span class="text-muted-foreground">·</span>
+                  {@render heroMetaItems()}
+                </div>
+              </div>
+            </div>
+          {:else if store.phase === "loading" && store.timeline.length === 0}
+            <!-- Loading state — avoids welcome page flash during loadRun -->
+            <div class="flex h-full items-center justify-center">
+              <div
+                class="h-5 w-5 rounded-full border-2 border-muted-foreground/30 border-t-primary animate-spin"
+              ></div>
+            </div>
+          {:else}
+            <!-- Timeline: chat messages + inline tool cards -->
+            <div data-conversation-root>
+              {#if store.run?.parent_run_id}
+                <div class="chat-content-width py-2" data-export-exclude>
+                  <div
+                    class="flex items-center gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400"
+                  >
+                    <svg
+                      class="h-3.5 w-3.5 shrink-0"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <circle cx="12" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><circle
+                        cx="18"
+                        cy="6"
+                        r="3"
+                      />
+                      <path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9" /><path d="M12 12v3" />
+                    </svg>
+                    <span class="text-foreground/60">{t("chat_forkedBanner")}</span>
+                    <button
+                      class="ml-auto shrink-0 text-blue-400 hover:text-blue-300 underline underline-offset-2"
+                      onclick={() => goto(`/chat?run=${store.run!.parent_run_id}`)}
+                      >{t("chat_viewParent")}</button
+                    >
+                  </div>
+                </div>
+              {/if}
+              {#if notificationVisible && latestNotification}
+                <div class="chat-content-width py-1" data-export-exclude>
+                  <div
+                    class="flex items-center gap-2 text-xs text-muted-foreground bg-teal-500/5 border border-teal-500/20 rounded px-3 py-1.5 animate-fade-in"
+                  >
+                    <span class="h-1.5 w-1.5 rounded-full bg-teal-500 animate-pulse"></span>
+                    Task #{latestNotification.task_id}: {latestNotification.status}
+                  </div>
+                </div>
+              {/if}
+              {#if toolNamesInTimeline.length >= 2}
+                <div class="chat-content-width py-2" data-export-exclude>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button
+                      class="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {!toolFilter
+                        ? 'bg-foreground/10 text-foreground'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted'}"
+                      onclick={() => (toolFilter = null)}>{t("chat_filterAll")}</button
+                    >
+                    {#each toolNamesInTimeline as name}
+                      {@const style = getToolColor(name)}
+                      <button
+                        class="flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {toolFilter ===
+                        name
+                          ? style.bg + ' ' + style.text
+                          : 'text-muted-foreground hover:text-foreground hover:bg-muted'}"
+                        onclick={() => (toolFilter = toolFilter === name ? null : name)}
+                      >
+                        <svg
+                          class="h-2.5 w-2.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d={style.icon} />
+                        </svg>
+                        {name}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+              {#if filteredTimeline.length - renderLimit > 0}
+                <div bind:this={topSentinel} aria-hidden="true" class="h-px w-full"></div>
+              {/if}
+              {#each visibleTimeline as entry, i (entry.id)}
+                {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
+                  <div
+                    id="msg-{entry.anchorId}"
+                    data-entry-id={entry.id}
+                    class:cv-auto={true}
+                    class="group/msg"
+                    class:opacity-40={lastClearSepId !== null &&
+                      (timelineIdIndex.get(entry.id) ?? 0) <
+                        (timelineIdIndex.get(lastClearSepId) ?? 0)}
+                  >
+                    {#if batchGroups.has(i)}
+                      {@const batch = batchGroups.get(i)}
+                      {#if batch}
+                        <div class="w-full py-1">
+                          <div class="chat-content-width pl-7">
+                            <BatchProgressBar tools={batch} />
+                          </div>
+                        </div>
+                      {/if}
+                    {/if}
+                    {#if toolBursts.has(i)}
+                      {@const burst = toolBursts.get(i)}
+                      {#if burst}
+                        <div class="w-full py-1">
+                          <div class="chat-content-width pl-7">
+                            <ToolBurstHeader
+                              {burst}
+                              collapsed={effectiveCollapsed.has(burst.key)}
+                              onToggle={() => toggleBurst(burst.key)}
+                            />
+                          </div>
+                        </div>
+                      {/if}
+                    {/if}
+                    {#if usageAnnotations.has(i)}
+                      {@const tu = usageAnnotations.get(i)}
+                      {#if tu}
+                        <div class="w-full py-1.5">
+                          <div class="chat-content-width">
+                            <div class="flex items-center gap-3">
+                              <div class="h-px flex-1 bg-border/40"></div>
+                              <span class="text-[10px] tabular-nums text-muted-foreground">
+                                {formatTokenCount(tu.inputTokens)}
+                                {t("chat_usageIn")} · {formatTokenCount(tu.outputTokens)}
+                                {t("chat_usageOut")}
+                                {#if tu.cacheReadTokens > 0 || tu.cacheWriteTokens > 0}
+                                  · {t("chat_usageCache", {
+                                    read: formatTokenCount(tu.cacheReadTokens),
+                                    write: formatTokenCount(tu.cacheWriteTokens),
+                                  })}
+                                {/if}
+                              </span>
+                              <div class="h-px flex-1 bg-border/40"></div>
+                            </div>
+                          </div>
+                        </div>
+                      {/if}
+                    {/if}
+                    {#if entry.kind === "user"}
+                      <ChatMessage
+                        message={{
+                          id: entry.id,
+                          role: "user",
+                          content: entry.content,
+                          timestamp: entry.ts,
+                        }}
+                        attachments={entry.attachments}
+                        onRewind={store.caps.supportsSnapshots &&
+                        entry.cliUuid &&
+                        store.sessionAlive &&
+                        !store.isRunning
+                          ? () =>
+                              handleRewindToMessage({
+                                cliUuid: entry.cliUuid!,
+                                content: entry.content,
+                                ts: entry.ts,
+                              })
+                          : undefined}
+                      />
+                    {:else if entry.kind === "assistant"}
+                      <ChatMessage
+                        message={{
+                          id: entry.id,
+                          role: "assistant",
+                          content: entry.content,
+                          timestamp: entry.ts,
+                        }}
+                        thinkingText={entry.thinkingText}
+                        agent={store.agent}
+                      />
+                    {:else if entry.kind === "tool"}
+                      {#if claudeTurnStarts.has(i)}
+                        <div class="pt-3"></div>
+                      {/if}
+                      {#if !burstHiddenIndices.has(i)}
+                        <div class="w-full py-1" id="tool-{entry.tool.tool_use_id}">
+                          <div class="chat-content-width">
+                            <InlineToolCard
+                              tool={entry.tool}
+                              subTimeline={entry.subTimeline}
+                              runId={store.run?.id ?? ""}
+                              {fetchToolResult}
+                              onAnswer={entry.tool.tool_name === "AskUserQuestion" &&
+                              (entry.tool.status === "running" ||
+                                entry.tool.status === "ask_pending")
+                                ? (answer) => handleToolAnswer(entry.tool.tool_use_id, answer)
+                                : undefined}
+                              onApprove={handleToolApprove}
+                              onPermissionRespond={handlePermissionRespond}
+                              onExitPlanClearContext={handleExitPlanClearContext}
+                              taskNotifications={store.taskNotifications}
+                              planContent={entry.tool.tool_name === "ExitPlanMode" &&
+                              (entry.tool.status === "permission_prompt" ||
+                                entry.tool.status === "success")
+                                ? getPlanContentForExitPlan(entry.id)
+                                : undefined}
+                              latestPlanTool={entry.kind === "tool" &&
+                                entry.tool.tool_use_id === latestPlanToolId}
+                              showPermissionInPanel={showPermissionPanel}
+                              {agentDisplayName}
+                              onPreviewFile={openPreviewForPath}
+                            />
+                          </div>
+                        </div>
+                      {/if}
+                    {:else if entry.kind === "command_output"}
+                      <div class="w-full py-2">
+                        <div class="chat-content-width pl-7">
+                          <div
+                            class="command-output rounded-lg border border-border/40 bg-muted dark:bg-[#1a1b26] px-4 py-3 text-sm overflow-x-auto"
+                          >
+                            {#if entry.content.includes("## Context Usage")}
+                              <ContextUsageGrid text={entry.content} />
+                            {:else if entry.content.includes("Total cost:") && entry.content.includes("Total duration")}
+                              <CostSummaryView text={entry.content} />
+                            {:else if entry.content
+                              .trimStart()
+                              .startsWith("Version ") && entry.content.includes("•")}
+                              <ReleaseNotesCard text={entry.content} />
+                            {:else if hasAnsiCodes(entry.content)}
+                              <pre
+                                class="whitespace-pre font-mono text-xs leading-relaxed text-foreground dark:text-[#c0caf5] m-0">{@html ansiToHtml(
+                                  entry.content,
+                                )}</pre>
+                            {:else}
+                              <MarkdownContent text={entry.content} />
+                            {/if}
+                          </div>
+                        </div>
+                      </div>
+                    {:else if entry.kind === "separator"}
+                      <div class="w-full py-3">
+                        <div class="chat-content-width">
+                          <div class="flex items-center gap-3">
+                            <div class="h-px flex-1 bg-amber-500/20"></div>
+                            <span class="text-xs text-amber-500/70 font-medium whitespace-nowrap">
+                              {entry.content === CONTEXT_CLEARED_MARKER
+                                ? t("chat_contextCleared")
+                                : entry.content}
+                            </span>
+                            <div class="h-px flex-1 bg-amber-500/20"></div>
+                          </div>
+                        </div>
+                      </div>
+                    {:else if entry.kind === "hook"}
+                      <HookExecutionCard
+                        eventName={entry.eventName}
+                        status={entry.status}
+                        statusMessage={entry.statusMessage}
+                        durationMs={entry.durationMs}
+                      />
+                    {/if}
+                  </div>
+                {/if}
+              {/each}
+
+              <!-- Rewind markers (independent array, not in store.timeline) -->
+              {#each rewindMarkers as marker, mi (marker.id)}
+                <div
+                  class="w-full py-3"
+                  id={mi === rewindMarkers.length - 1 ? "rewind-marker-latest" : undefined}
+                >
+                  <div class="chat-content-width">
+                    <div class="flex items-center gap-3">
+                      <div class="h-px flex-1 bg-blue-500/20"></div>
+                      <div class="flex items-center gap-2 text-xs text-blue-500/80 font-medium">
+                        <svg
+                          class="h-3.5 w-3.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                          <path d="M3 3v5h5" />
+                        </svg>
+                        <span
+                          >{t("rewind_separatorLabel", {
+                            count: String(marker.filesReverted.length),
+                          })}</span
+                        >
+                      </div>
+                      <div class="h-px flex-1 bg-blue-500/20"></div>
+                    </div>
+                    <div class="mt-1 ml-8 text-[11px] text-muted-foreground/60 truncate">
+                      &ldquo;{marker.targetContent}&rdquo;
+                    </div>
+                    {#if marker.filesReverted.length > 0}
+                      <details class="mt-1 ml-8">
+                        <summary
+                          class="cursor-pointer text-[10px] text-blue-500/50 hover:text-blue-500/80"
+                        >
+                          {t("rewind_separatorFiles", {
+                            count: String(marker.filesReverted.length),
+                          })}
+                        </summary>
+                        <div class="mt-1 rounded bg-muted/30 px-2 py-1">
+                          {#each marker.filesReverted as file}
+                            <div class="truncate font-mono text-[10px] text-muted-foreground">
+                              {file}
+                            </div>
+                          {/each}
+                        </div>
+                      </details>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+
+              <!-- Last turn usage annotation (after all entries) -->
+              {#if lastTurnUsage && !store.isRunning}
+                <div class="w-full py-1.5">
+                  <div class="chat-content-width">
+                    <div class="flex items-center gap-3">
+                      <div class="h-px flex-1 bg-border/40"></div>
+                      <span class="text-[10px] tabular-nums text-muted-foreground">
+                        {formatTokenCount(lastTurnUsage.inputTokens)}
+                        {t("chat_usageIn")} · {formatTokenCount(lastTurnUsage.outputTokens)}
+                        {t("chat_usageOut")}
+                        {#if lastTurnUsage.cacheReadTokens > 0 || lastTurnUsage.cacheWriteTokens > 0}
+                          · {t("chat_usageCache", {
+                            read: formatTokenCount(lastTurnUsage.cacheReadTokens),
+                            write: formatTokenCount(lastTurnUsage.cacheWriteTokens),
+                          })}
+                        {/if}
+                      </span>
+                      <div class="h-px flex-1 bg-border/40"></div>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+
+              <!-- Pending hook callbacks (runtime UI — excluded from export) -->
+              {#each store.hookEvents.filter((h) => h.status === "hook_pending") as hookEvent (hookEvent.request_id)}
+                <div class="chat-content-width pl-7" data-export-exclude>
+                  <HookReviewCard {hookEvent} onRespond={handleHookCallbackRespond} />
+                </div>
+              {/each}
+
+              <!-- Thinking panel (extended thinking) -->
+              {#if store.thinkingText}
+                <div class="w-full animate-fade-in">
+                  <div class="chat-content-width py-2">
+                    <button
+                      class="w-full text-left rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 transition-colors group"
+                      onclick={() => (thinkingExpanded = !thinkingExpanded)}
+                    >
+                      <div class="flex items-center gap-2">
+                        <div
+                          class="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-blue-500/10"
+                        >
+                          <svg
+                            class="h-3 w-3 text-blue-400"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path
+                              d="M12 2a8 8 0 0 0-8 8c0 3.4 2.1 6.3 5 7.4V19a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1.6c2.9-1.1 5-4 5-7.4a8 8 0 0 0-8-8z"
+                            />
+                            <path d="M10 22h4" />
+                          </svg>
+                        </div>
+                        <span class="text-xs font-medium text-blue-400">{t("chat_thinking")}</span>
+                        {#if store.isRunning && !store.streamingText}
+                          <div
+                            class="h-2.5 w-2.5 rounded-full border-2 border-blue-500/30 border-t-blue-400 animate-spin"
+                            data-export-exclude
+                          ></div>
+                        {/if}
+                        <svg
+                          class="h-3 w-3 text-muted-foreground/40 shrink-0 transition-transform ml-auto {thinkingExpanded
+                            ? 'rotate-180'
+                            : ''}"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="m6 9 6 6 6-6" />
+                        </svg>
+                      </div>
+                      {#if thinkingExpanded}
+                        <div class="mt-2 pl-7 max-h-60 overflow-y-auto">
+                          <pre
+                            class="text-xs font-mono whitespace-pre-wrap break-words text-blue-300/70 leading-relaxed">{store.thinkingText.trimEnd()}</pre>
+                        </div>
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+
+              <!-- Streaming text -->
+              {#if store.streamingText}
+                <div class="w-full animate-fade-in">
+                  <div class="chat-content-width py-4">
+                    <div class="mb-1.5 flex items-center gap-2">
+                      <div
+                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent
+                          ? 'bg-emerald-500/10 text-emerald-500'
+                          : 'bg-orange-500/10 text-orange-500'}"
+                      >
+                        <svg
+                          class="h-3 w-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          {#if isCodexAgent}
+                            <polyline points="4 17 10 11 4 5" /><line
+                              x1="12"
+                              x2="20"
+                              y1="19"
+                              y2="19"
+                            />
+                          {:else}
+                            <path
+                              d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
+                            />
+                          {/if}
+                        </svg>
+                      </div>
+                      <span class="text-sm font-semibold text-foreground"
+                        >{assistantDisplayName}</span
+                      >
+                    </div>
+                    <div class="pl-7 prose-chat">
+                      <MarkdownContent text={store.streamingText} streaming={true} />
+                    </div>
+                  </div>
+                </div>
+              {/if}
+
+              <!-- Slash command processing indicator (before thinking kicks in) -->
+              {#if processingSlashCmd && !thinkingVisible && !store.streamingText && !store.thinkingText}
+                <div class="w-full animate-fade-in" data-export-exclude>
+                  <div class="chat-content-width py-2">
+                    <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                      <div
+                        class="h-3.5 w-3.5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+                      ></div>
+                      <span>{t("chat_processingCommand", { command: processingSlashCmd })}</span>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+
+              <!-- Thinking indicator (debounced 300ms to avoid flash on fast CLI commands) -->
+              {#if thinkingVisible && !store.thinkingText}
+                <div class="w-full animate-fade-in" data-export-exclude>
+                  <div class="chat-content-width py-4">
+                    <div class="mb-1.5 flex items-center gap-2">
+                      <div
+                        class="flex h-5 w-5 items-center justify-center rounded-sm {isCodexAgent
+                          ? 'bg-emerald-500/10 text-emerald-500'
+                          : 'bg-orange-500/10 text-orange-500'}"
+                      >
+                        <svg
+                          class="h-3 w-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          {#if isCodexAgent}
+                            <polyline points="4 17 10 11 4 5" /><line
+                              x1="12"
+                              x2="20"
+                              y1="19"
+                              y2="19"
+                            />
+                          {:else}
+                            <path
+                              d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"
+                            />
+                          {/if}
+                        </svg>
+                      </div>
+                      <span class="text-sm font-semibold text-foreground"
+                        >{assistantDisplayName}</span
+                      >
+                      {#if thinkingElapsed > 0}
+                        <span class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+                          >{formatElapsed(thinkingElapsed)}</span
+                        >
+                      {/if}
+                    </div>
+                    <div class="pl-7">
+                      {#if store.activeToolName}
+                        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                          <div
+                            class="h-3.5 w-3.5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+                          ></div>
+                          <span
+                            >{t("chat_usingTool")}
+                            <span class="text-foreground font-medium">{store.activeToolName}</span
+                            ></span
+                          >
+                          {#if store.thinkingEndMs && store.thinkingDurationSec > 0}
+                            <span class="text-xs tabular-nums"
+                              >· thought for {store.thinkingDurationSec}s</span
+                            >
+                          {/if}
+                        </div>
+                      {:else if approving}
+                        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                          <div
+                            class="h-3.5 w-3.5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+                          ></div>
+                          <span>{t("chat_restartingApproved")}</span>
+                        </div>
+                      {:else if sending}
+                        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                          <div
+                            class="h-3.5 w-3.5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
+                          ></div>
+                          <span>{t("chat_startingSession")}</span>
+                        </div>
+                      {:else}
+                        <div class="flex items-center gap-2 text-sm">
+                          <span class="spinner-star">✦</span>
+                          <span class="spinner-shimmer">{spinnerVerb}…</span>
+                          {#if store.thinkingEndMs && store.thinkingDurationSec > 0}
+                            <span class="text-muted-foreground text-xs tabular-nums"
+                              >· thought for {store.thinkingDurationSec}s</span
+                            >
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+        {#if showChatScrollHint}
+          <button
+            class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-lg transition-all duration-200 hover:bg-primary/90 animate-fade-in"
+            onclick={scrollChatToBottom}
+          >
+            {t("chat_newMessages")}
+            <svg
+              class="h-3 w-3"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        {/if}
+      {:else if store.run && store.run.status !== "pending"}
+        <!-- CLI mode: terminal -->
+        <XTerminal
+          bind:this={xtermRef}
+          onResize={handleTermResize}
+          onReady={handleTermReady}
+          class="h-full"
+        />
+      {:else}
+        <!-- CLI mode: welcome state -->
+        <div class="flex h-full items-center justify-center">
+          <div class="text-center max-w-md animate-slide-up">
+            <img src="/logo.png?v=2" alt="OC" class="mx-auto mb-4 h-12 w-12 rounded-2xl" />
+            <h2 class="text-lg font-semibold text-primary mb-2">{t("layout_appName")}</h2>
+            {#if codexWarning}
+              <p class="text-amber-500 text-sm mb-3 px-2">{codexWarning}</p>
+            {/if}
+            <p class="text-sm text-muted-foreground mb-4">
+              {store.run ? t("chat_typeToStartSession") : t("chat_startSessionHint")}
+            </p>
+            {#if !store.run}
+              <div class="flex flex-col gap-2">
+                {#each examplePrompts as prompt}
+                  <button
+                    class="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-left text-sm text-neutral-300 hover:bg-white/10 hover:border-white/20 transition-all duration-150 group"
+                    onclick={() => fillPrompt(prompt())}
+                  >
+                    <span
+                      class="text-muted-foreground/50 mr-2 group-hover:text-muted-foreground transition-colors"
+                      >&rarr;</span
+                    >
+                    {prompt()}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+            {@render initHintCard()}
+            {@render heroMetaFooter()}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Fork overlay -->
+      {#if forkOverlay}
+        <div
+          class="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-fade-in"
+        >
+          {#if forkOverlay.error}
+            <!-- Error state -->
+            <div class="flex flex-col items-center gap-4 max-w-sm text-center animate-slide-up">
+              <div
+                class="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10"
+              >
+                <svg
+                  class="h-6 w-6 text-destructive"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="12" cy="12" r="10" /><path d="m15 9-6 6" /><path d="m9 9 6 6" />
+                </svg>
+              </div>
+              <div>
+                <h3 class="text-sm font-semibold text-foreground mb-1">{t("chat_forkFailed")}</h3>
+                <p class="text-xs text-muted-foreground">{forkOverlay.error}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  class="rounded-lg border border-border bg-muted px-4 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+                  onclick={handleForkCancel}>{t("common_cancel")}</button
+                >
+                <button
+                  class="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  disabled={resuming}
+                  onclick={handleForkRetry}>{t("common_retry")}</button
+                >
+              </div>
+            </div>
+          {:else}
+            <!-- In-progress state -->
+            <div class="flex flex-col items-center gap-4 max-w-sm text-center animate-slide-up">
+              <div class="flex h-12 w-12 items-center justify-center rounded-full bg-blue-500/10">
+                <svg
+                  class="h-6 w-6 text-blue-400 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              </div>
+              <div>
+                <h3 class="text-sm font-semibold text-foreground mb-1">
+                  {t("chat_forkingSession")}
+                </h3>
+                <p class="text-xs text-muted-foreground">
+                  {t("chat_forkingDesc")}
+                </p>
+              </div>
+              {#if forkElapsed > 0}
+                <span class="text-xs tabular-nums text-muted-foreground"
+                  >{formatElapsed(forkElapsed)}</span
+                >
+              {/if}
+              <button
+                class="rounded-lg border border-border bg-muted px-4 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+                onclick={handleForkCancel}>{t("common_cancel")}</button
+              >
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Classified error card -->
+      {#if store.error && !forkOverlay}
+        {@const classified = classifyError(store.run?.result_subtype, store.error)}
+        {@const catIcon =
+          classified.category === "context_limit"
+            ? "⚠"
+            : classified.category === "auth_issue"
+              ? "🔑"
+              : classified.category === "budget_limit"
+                ? "💰"
+                : classified.category === "server_issue"
+                  ? "☁"
+                  : classified.category === "session_timeout"
+                    ? "⏱"
+                    : classified.category === "tool_issue"
+                      ? "🔧"
+                      : "❌"}
+        <div class="absolute bottom-14 left-3 right-3 z-10">
+          <div
+            class="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm backdrop-blur-sm animate-fade-in"
+          >
+            <div class="flex items-start gap-2">
+              <span class="shrink-0 text-base leading-none mt-0.5">{catIcon}</span>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="text-[10px] font-medium uppercase tracking-wider text-destructive/70"
+                    >{t(`error_category_${classified.category}`)}</span
+                  >
+                </div>
+                <p class="text-destructive text-xs leading-relaxed break-words">{store.error}</p>
+                <p class="text-destructive/60 text-[10px] mt-1">
+                  {t(`error_guidance_${classified.category}`)}
+                </p>
+              </div>
+              <button
+                class="shrink-0 text-destructive/50 hover:text-destructive text-xs"
+                onclick={() => (store.error = "")}>{t("common_dismiss")}</button
+              >
+            </div>
+            <div class="flex items-center gap-2 mt-2 pl-6">
+              {#if classified.canRetry && store.phase === "failed" && store.run?.session_id}
+                <button
+                  class="rounded px-2.5 py-1 text-xs bg-destructive/20 hover:bg-destructive/30 text-destructive transition-colors"
+                  onclick={() => handleResume("continue")}>{t("common_retry")}</button
+                >
+              {/if}
+              {#if classified.canFork && store.run?.session_id}
+                <button
+                  class="rounded px-2.5 py-1 text-xs bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 transition-colors"
+                  onclick={() => handleResume("fork")}>{t("statusbar_fork")}</button
+                >
+              {/if}
+              {#if classified.settingsLink}
+                <button
+                  class="rounded px-2.5 py-1 text-xs bg-destructive/20 hover:bg-destructive/30 text-destructive transition-colors"
+                  onclick={() => goto(classified.settingsLink)}>{t("chat_checkSettings")}</button
+                >
+              {/if}
+            </div>
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Resume warning (if applicable) -->
+    {#if canResumeNow(store.run, store.phase, agentSettings?.no_session_persistence ?? false) && getResumeWarning(store.run)}
+      <div
+        class="mx-3 mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-400"
+      >
+        {getResumeWarning(store.run)}
+      </div>
+    {/if}
+
+    <!-- Floating permission panel (above input bar) -->
+    {#if showPermissionPanel}
+      <PermissionPanel
+        pendingTools={pendingToolPermissions}
+        onPermissionRespond={handlePermissionRespond}
+        {agentDisplayName}
+      />
+    {/if}
+
+    <!-- MCP Elicitation dialog (above input bar) -->
+    {#if store.hasElicitation && store.sessionAlive}
+      <ElicitationDialog
+        elicitations={store.pendingElicitations}
+        onRespond={handleElicitationRespond}
+      />
+    {/if}
+
+    <!-- BTW side question drawer -->
+    {#if btwState.active}
+      <div
+        class="border-t border-blue-500/30 bg-blue-500/5"
+        style="max-height: 40vh; overflow-y: auto;"
+      >
+        <div class="flex items-center justify-between px-4 py-2 border-b border-border/50">
+          <span class="text-xs font-medium text-blue-400">BTW</span>
+          <button
+            onclick={() => (btwState = { ...btwState, active: false })}
+            title="Close side question"
+            class="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <svg
+              class="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="px-4 py-3 space-y-2">
+          <p class="text-xs text-muted-foreground">Q: {btwState.question}</p>
+          <div class="text-sm">
+            {#if btwState.error}
+              <p class="text-destructive">{btwState.error}</p>
+            {:else if btwState.answer}
+              <MarkdownContent text={btwState.answer} streaming={btwState.loading} />
+            {/if}
+            {#if btwState.loading}
+              <span class="inline-block w-2 h-4 bg-blue-400 animate-pulse rounded-sm"></span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Input bar -->
+    <!-- Ralph Loop status bar -->
+    {#if store.ralphLoop?.active}
+      <div class="mx-auto w-full max-w-3xl px-4 pb-2">
+        <div
+          class="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-sm"
+        >
+          <div class="flex items-center gap-2 text-blue-400">
+            <span class="animate-pulse">🔄</span>
+            <span class="font-medium">Ralph Loop</span>
+            <span class="text-blue-400/70">
+              iteration {store.ralphLoop.iteration}/{store.ralphLoop.maxIterations || "∞"}
+            </span>
+            {#if store.ralphLoop.completionPromise}
+              <span class="text-blue-400/50">
+                · promise: "{store.ralphLoop.completionPromise}"
+              </span>
+            {/if}
+          </div>
+          <button
+            class="rounded px-2 py-0.5 text-xs text-red-400 hover:bg-red-500/20 transition-colors"
+            onclick={handleRalphCancel}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    <ScheduledTasksChip
+      tasks={store.scheduledTasks}
+      busy={store.isRunning}
+      onCancel={(id) => store.sendMessage(`Cancel scheduled task ${id}`, [])}
+      onList={() => store.sendMessage("Show me my scheduled tasks", [])}
+    />
+
+    <TodoPanel tasks={store.panelTasks} />
+
+    {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready" || TERMINAL_PHASES.includes(store.phase)}
+      <!-- Key on run id so each chat gets a clean PromptInput, seeded from its own saved draft -->
+      {#key store.run?.id ?? ""}
+        <PromptInput
+          bind:this={promptRef}
+          agent={effectiveAgent}
+          running={store.isActivelyRunning}
+          disabled={inputBlockedByPermission}
+          pendingPermission={store.hasInlinePermission}
+          hasRun={!!store.run}
+          sessionAlive={store.sessionAlive}
+          canResume={!store.sessionAlive &&
+            canResumeNow(store.run, store.phase, agentSettings?.no_session_persistence ?? false)}
+          useStreamSession={store.useStreamSession}
+          slashCommandMenu={getAgentFeatures(effectiveAgent).slashCommandMenu}
+          isRemote={store.isRemote}
+          cliCommands={store.sessionInitReceived && store.sessionCommands.length > 0
+            ? store.sessionCommands
+            : effectiveAgent === "codex"
+              ? []
+              : mergeProjectCommands(getCliCommands(), projectCommands)}
+          models={store.useStreamSession || effectiveAgent === "codex" ? effectiveModels : []}
+          currentModel={store.model}
+          permissionMode={store.features.permissionModeSwitch ? store.permissionMode : "default"}
+          cwd={store.effectiveCwd ||
+            folderCwdOverride ||
+            localStorage.getItem("ocv:project-cwd") ||
+            ""}
+          authMode={store.authMode}
+          platformId={store.platformId ?? "anthropic"}
+          platformCredentials={settings?.platform_credentials ?? []}
+          onSend={sendMessage}
+          onBtwSend={handleBtwSend}
+          onAgentChange={handleAgentChange}
+          onInterrupt={() => store.interrupt()}
+          onModelSwitch={handleModelChange}
+          onPermissionModeChange={store.features.permissionModeSwitch
+            ? handlePermissionModeChange
+            : undefined}
+          onVirtualCommand={handleVirtualCommand}
+          fastModeState={store.fastModeState}
+          onFastModeSwitch={handleFastModeSwitch}
+          onPlatformChange={handlePlatformChange}
+          {authOverview}
+          authSourceLabel={store.authSourceLabel}
+          authSourceCategory={store.authSourceCategory}
+          apiKeySource={store.apiKeySource}
+          onAuthModeChange={handleAuthModeChange}
+          {localProxyStatuses}
+          showAuthBadge={!welcomeVisible && store.useStreamSession}
+          onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
+          availableSkills={store.availableSkills}
+          {skillItems}
+          codexSkillItems={codexRuntimeSkills}
+          agents={preloadedAgents.map((a) => ({ name: a.name, description: a.description }))}
+          hasStash={!!stashedInput}
+          {userHistory}
+          runId={store.run?.id ?? ""}
+          initialDraft={promptDraftsByRun.get(store.run?.id ?? "")}
+          onDraftChange={savePromptDraft}
+          onRestoreStash={() => {
+            if (stashedInput) {
+              promptRef?.restoreSnapshot(stashedInput);
+              stashedInput = null;
+              showChatToast(t("toast_stashRestored"));
+              dbg("chat", "stash restored via badge click");
+            }
+          }}
+        />
+      {/key}
+    {/if}
+  </div>
+
+  <!-- Tool Activity sidebar -->
+  {#if hasSidebarData}
+    <ToolActivity
+      timeline={store.timeline}
+      tools={store.tools}
+      turnUsages={store.turnUsages}
+      {contextHistory}
+      persistedFiles={store.persistedFiles}
+      sessionInfo={currentSessionInfo}
+      collapsed={sidebarCollapsed}
+      onToggle={toggleSidebar}
+      onScrollToTool={scrollToTool}
+      onScrollToTurn={(anchorId) => scrollToMessage(anchorId)}
+      bind:requestedTab={sidebarRequestedTab}
+      backgroundTasks={store.taskNotifications}
+      activeBackgroundTasks={store.activeBackgroundTasks}
+      cwd={store.effectiveCwd}
+      runId={store.run?.id ?? ""}
+      isRemote={store.isRemote}
+      bind:requestedPreviewPath
+    />
+  {/if}
+
+  <RewindModal
+    bind:open={rewindModalOpen}
+    runId={store.run?.id ?? ""}
+    candidates={rewindCandidates}
+    initialCandidate={rewindDirectTarget}
+    onSuccess={(info) => {
+      // Run-id debounce: discard if run changed while modal was open
+      if (info.runId !== store.run?.id) return;
+      rewindMarkers = [
+        ...rewindMarkers,
+        {
+          id: uuid(),
+          ts: new Date().toISOString(),
+          targetContent: truncate(info.targetContent, 80),
+          filesReverted: info.filesReverted,
+        },
+      ];
+      if (info.degraded) {
+        showChatToast(t("rewind_degradedToFull"));
+      } else {
+        showChatToast(t("toast_rewindSuccess"));
+      }
+      tick().then(() => {
+        document
+          .getElementById("rewind-marker-latest")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }}
+  />
+
+  <CodexReviewModal bind:open={codexReviewPickerOpen} onSubmit={runCodexReview} />
+
+  <!-- Codex turn diff: supplied-diff mode (no git fetch, no staged/unstaged tabs). -->
+  <DiffModal bind:open={turnDiffOpen} title="Turn diff" diffText={store.turnDiff} />
+
+  <RewindCodexModal
+    bind:open={codexRewindOpen}
+    turns={codexRewindTurns}
+    busy={codexRewindBusy}
+    onConfirm={runCodexRewind}
+  />
+
+  <GoalPanel bind:open={goalPanelOpen} runId={store.run?.id} goal={store.goal} />
+
+  <ShortcutHelpPanel bind:open={shortcutHelpOpen} />
+
+  <FolderPicker
+    bind:open={folderPickerOpen}
+    initialHost={folderPickerInitialHost}
+    initialPath={folderPickerInitialPath}
+    hideTargetSelector={folderPickerHideTarget}
+    onConfirm={(result) => {
+      const fn = folderPickerResolve;
+      folderPickerResolve = null;
+      fn?.(result);
+    }}
+    onCancel={() => {
+      const fn = folderPickerResolve;
+      folderPickerResolve = null;
+      fn?.(null);
+    }}
+  />
+
+  <!-- Chat toast (fixed bottom-center, auto-dismiss) -->
+  {#if chatToast}
+    <div
+      class="fixed bottom-20 left-1/2 -translate-x-1/2 z-50
+      rounded-lg border bg-background/95 px-4 py-2 text-sm shadow-lg backdrop-blur-sm
+      animate-in fade-in slide-in-from-bottom-2 duration-200"
+    >
+      {chatToast}
+    </div>
+  {/if}
+</div>
