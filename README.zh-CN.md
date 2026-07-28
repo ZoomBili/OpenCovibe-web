@@ -16,7 +16,7 @@ OpenCovibe Web Server 是 Claude Code 和 Codex 的浏览器界面。项目只�
 
 ```bash
 REPO="ZoomBili/OpenCovibe-web"
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash
 ```
 
@@ -37,7 +37,7 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-ser
 指定版本、运行用户和工作目录：
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
       --version v0.2.6 \
       --user alice \
@@ -47,7 +47,7 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-ser
 当 CLI 由 NVM 等工具安装且无法自动发现时，显式指定绝对路径：
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
       --claude-path /home/alice/.nvm/versions/node/v22.0.0/bin/claude \
       --codex-path /home/alice/.nvm/versions/node/v22.0.0/bin/codex
@@ -88,18 +88,29 @@ sudo cat /etc/opencovibe.env
 卸载服务和二进制，保留 OpenCovibe 配置与数据：
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- --uninstall
 ```
 
 同时删除 `/etc/opencovibe.env` 和运行用户的 `~/.opencovibe`：
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- --uninstall --purge
 ```
 
 `--purge` 也不会删除 `~/.claude` 或 `~/.codex`。
+
+## 不使用 GitHub Actions 发布
+
+如果仓库无法使用 GitHub Actions，可在 Windows 开发机安装 Rust、Node.js 和 Zig 0.14+，登录 Git Credential Manager 后直接发布：
+
+```powershell
+git credential-manager github login --browser
+.\scripts\publish-release.ps1
+```
+
+脚本会在本机交叉构建 Linux `amd64`、`arm64`，生成 SHA256，并创建或更新与 `package.json` 版本对应的 GitHub Release。令牌从 Git Credential Manager 读取，不会写入项目文件或日志。
 
 ## HTTPS 反向代理
 

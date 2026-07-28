@@ -16,7 +16,7 @@ Install the latest GitHub Release:
 
 ```bash
 REPO="ZoomBili/OpenCovibe-web"
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash
 ```
 
@@ -31,7 +31,7 @@ Open `http://SERVER_IP:9476` and sign in with the token printed by the installer
 Pin a release and select the service user and workspace:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
       --version v0.2.6 \
       --user alice \
@@ -60,11 +60,22 @@ Run the install command again to upgrade. The existing browser token is retained
 Uninstall while retaining OpenCovibe configuration and data:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/scripts/install-server.sh" \
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- --uninstall
 ```
 
 Add `--purge` to also remove `/etc/opencovibe.env` and the service user's `~/.opencovibe`. Claude/Codex data is never removed.
+
+## Publish Without GitHub Actions
+
+When GitHub Actions is unavailable, install Rust, Node.js, and Zig 0.14+ on a Windows development machine, then publish directly:
+
+```powershell
+git credential-manager github login --browser
+.\scripts\publish-release.ps1
+```
+
+The script cross-compiles Linux `amd64` and `arm64`, writes SHA256 files, and creates or updates the GitHub Release matching the version in `package.json`. It reads authentication from Git Credential Manager and does not write the token to project files or logs.
 
 ## Reverse Proxy
 
