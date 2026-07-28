@@ -1,6 +1,6 @@
 # OpenCovibe Web Server
 
-OpenCovibe Web Server 是 Claude Code 和 Codex 的浏览器界面。项目只运行一个原生 Linux Web 服务，不包含桌面客户端、Tauri、WebView、Docker，也不会安装或更新任何 Agent CLI。
+OpenCovibe Web Server 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "OpenCovibe")项目衍生而来, 固取名为OpenCovibe-web，目标是服务器端（linux、飞牛及其它nas）的纯web coding。项目只运行一个原生 Linux Web 服务，不包含桌面客户端、Tauri、WebView、Docker，也不会安装或更新任何 Agent CLI。
 
 [English](README.md)
 
@@ -32,9 +32,10 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-serve
 
 安装器不会下载、登录、升级或删除 Claude Code/Codex，也不会修改 `~/.claude` 和 `~/.codex`。
 
-默认访问地址为 `http://服务器IP:9476`。服务默认使用执行 `sudo` 前的用户，并把该用户主目录作为工作目录。
+默认访问地址为 `http://服务器IP:9476`。服务默认使用执行 `sudo` 前的用户，并把上面配置的workspace作为工作目录。
 
-```安装后的示例：
+## 安装过程示例（注意其中的Token，后面登录需要用到）
+```
 root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
       --version v0.2.6 \
@@ -54,12 +55,24 @@ opencovibe-server_v0.2.6_linux_amd64.tar.gz: OK
 [OpenCovibe] Waiting for http://127.0.0.1:9476/health
 [OpenCovibe] Installed OpenCovibe v0.2.6
 [OpenCovibe] URL: http://192.168.31.2:9476
-[OpenCovibe] Token: e17d0abcc1eb3769c0e12c813184b8f90013227ee078a753（持久化token）
+[OpenCovibe] Token: e17d0abcc1eb3769c0e12c813184b8f90013227ee058a753
 [OpenCovibe] Service user: root
 [OpenCovibe] Workspace: /vol1/1000/aicoding
 [OpenCovibe] No Claude Code or Codex files were installed or modified.
 ```
+1、内网访问http://192.168.31.2:9476或公网访问反代后的地址
+<img width="2564" height="1458" alt="image" src="https://github.com/user-attachments/assets/81b1f0ba-1f9a-41f9-8ec2-496af774bf05" />
 
+2、找到上面安装脚本完成后的持久化Token，输入Token后访问（首次）。
+<img width="2666" height="1353" alt="image" src="https://github.com/user-attachments/assets/c65f4498-526d-4d68-93bb-15b2dcfebead" />
+
+3、选择使用claudecode还是codex，自动检测后进入coding界面
+<img width="2666" height="1353" alt="image" src="https://github.com/user-attachments/assets/6bd2d82c-0d24-48ef-b78f-784d61ff3d3c" />
+
+4、服务重启命令
+systemctl restart opencovibe
+
+## 下面的为说明补充，可看可不看
 ## 安装选项
 
 指定版本、运行用户和工作目录：
