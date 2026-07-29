@@ -17,7 +17,6 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 REPO="ZoomBili/OpenCovibe-web"
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
-      --version v0.2.7 \
       --workspace /vol1/1000/aicoding（替换为你的工作空间）
 ```
 
@@ -37,7 +36,6 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-serve
 ```
 root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
-      --version v0.2.7 \
       --workspace /vol1/1000/aicoding
 [OpenCovibe] Using existing Claude Code: /vol1/1000/nodejs24/npm-global/bin/claude
 [OpenCovibe] Using existing Codex: /vol1/1000/nodejs24/npm-global/bin/codex
@@ -80,8 +78,7 @@ systemctl restart opencovibe
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
       --version v0.2.7 \
-      --user alice \
-      --workspace /home/alice/projects
+      --workspace /vol1/1000/aicoding
 ```
 
 当 CLI 由 NVM 等工具安装且无法自动发现时，显式指定绝对路径：
