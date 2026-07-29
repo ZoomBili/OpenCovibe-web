@@ -2,7 +2,7 @@
 
 OpenCovibe Web Server 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "OpenCovibe")项目衍生而来, 固取名为OpenCovibe-web，目标是服务器端（linux、飞牛及其它nas）的纯web coding。项目只运行一个原生 Linux Web 服务，不包含桌面客户端、Tauri、WebView、Docker，也不会安装或更新任何 Agent CLI。
 
-[English](README.md)
+本项目github开源地址为：[OpenCovibe-web](https://github.com/ZoomBili/OpenCovibe-web "OpenCovibe-web")
 
 ## 一键安装
 
