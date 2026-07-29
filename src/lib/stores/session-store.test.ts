@@ -2432,6 +2432,65 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  describe("interrupt", () => {
+    it("clears the busy state when the CLI transitions to idle", async () => {
+      vi.useFakeTimers();
+      const sendControl = vi.mocked(api.sendSessionControl);
+      const stopSession = vi.mocked(api.stopSession);
+      sendControl.mockResolvedValue({ ok: true });
+      stopSession.mockResolvedValue(undefined);
+      store.run = makeRun("run-interrupt-idle");
+      store.phase = "running";
+
+      try {
+        const pending = store.interrupt();
+        expect(store.interruptInFlight).toBe(true);
+        store.applyEvent({
+          type: "run_state",
+          run_id: "run-interrupt-idle",
+          state: "idle",
+        } as BusEvent);
+        await vi.advanceTimersByTimeAsync(100);
+        await pending;
+
+        expect(sendControl).toHaveBeenCalledWith("run-interrupt-idle", "interrupt");
+        expect(stopSession).not.toHaveBeenCalled();
+        expect(store.phase).toBe("idle");
+        expect(store.interruptInFlight).toBe(false);
+      } finally {
+        sendControl.mockReset().mockResolvedValue({});
+        stopSession.mockReset().mockResolvedValue(undefined);
+        vi.useRealTimers();
+      }
+    });
+
+    it("force-stops the actor when interrupt has no effect", async () => {
+      vi.useFakeTimers();
+      const sendControl = vi.mocked(api.sendSessionControl);
+      const stopSession = vi.mocked(api.stopSession);
+      sendControl.mockImplementation(() => new Promise(() => {}));
+      stopSession.mockResolvedValue(undefined);
+      store.run = makeRun("run-interrupt-timeout");
+      store.phase = "running";
+
+      try {
+        const pending = store.interrupt();
+        expect(store.interruptInFlight).toBe(true);
+        await vi.advanceTimersByTimeAsync(3_100);
+        await pending;
+
+        expect(stopSession).toHaveBeenCalledWith("run-interrupt-timeout");
+        expect(store.phase).toBe("stopped");
+        expect(store.run?.status).toBe("stopped");
+        expect(store.interruptInFlight).toBe(false);
+      } finally {
+        sendControl.mockReset().mockResolvedValue({});
+        stopSession.mockReset().mockResolvedValue(undefined);
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("elicitation_prompt", () => {
     it("adds to pendingElicitations map keyed by request_id", () => {
       store.run = makeRun("run-1");

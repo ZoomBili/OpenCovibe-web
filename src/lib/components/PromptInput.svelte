@@ -80,6 +80,8 @@
     disabled = false,
     hasRun = false,
     running = false,
+    canInterrupt = false,
+    interrupting = false,
     sessionAlive = false,
     canResume = false,
     useStreamSession = false,
@@ -127,6 +129,8 @@
     disabled?: boolean;
     hasRun?: boolean;
     running?: boolean;
+    canInterrupt?: boolean;
+    interrupting?: boolean;
     sessionAlive?: boolean;
     canResume?: boolean;
     useStreamSession?: boolean;
@@ -2471,7 +2475,7 @@
           </button>
         {/if}
 
-        {#if running && onInterrupt}
+        {#if running}
           {#if canSend}
             {#if btwMode}
               <!-- BTW send: blue theme -->
@@ -2535,16 +2539,7 @@
               </svg>
             </button>
           {/if}
-          <button
-            class="flex h-7 w-7 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 transition-colors"
-            onclick={onInterrupt}
-            title={t("prompt_stop")}
-          >
-            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
-          </button>
-        {:else}
+        {:else if !canInterrupt}
           <button
             class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {canSend
               ? 'bg-primary text-primary-foreground hover:bg-primary/90'
@@ -2564,6 +2559,26 @@
             >
               <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
             </svg>
+          </button>
+        {/if}
+        {#if canInterrupt && onInterrupt}
+          <button
+            type="button"
+            class="flex h-7 w-7 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-wait disabled:opacity-60"
+            onclick={onInterrupt}
+            disabled={interrupting}
+            aria-busy={interrupting}
+            title={t("prompt_stop")}
+          >
+            {#if interrupting}
+              <span
+                class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-destructive/30 border-t-destructive"
+              ></span>
+            {:else}
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            {/if}
           </button>
         {/if}
       </div>

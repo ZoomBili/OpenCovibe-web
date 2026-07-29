@@ -1,6 +1,6 @@
 [package]
 name = "opencovibe-server"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2021"
 description = "Browser-based UI for Claude Code and Codex"
 license = "Apache-2.0"

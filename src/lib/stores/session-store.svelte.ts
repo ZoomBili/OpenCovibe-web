@@ -424,6 +424,9 @@ export class SessionStore {
 
   /** True while stop() is in progress — suppresses RunState error display from dying CLI. */
   private _stopping = false;
+  interruptInFlight = $state(false);
+  private static readonly _INTERRUPT_GRACE_MS = 3_000;
+  private static readonly _INTERRUPT_POLL_MS = 100;
 
   // Internal dedup sets (not reactive — only used inside reducers)
   private _seenMessageIds = new Set<string>();
@@ -1579,6 +1582,7 @@ export class SessionStore {
     this.sessionInitReceived = false;
     this.unknownEventCount = 0;
     this.rawFallbackCount = 0;
+    this.interruptInFlight = false;
     // NOTE: remoteHostName and platformId are intentionally NOT cleared here —
     // they are run-level properties restored from run metadata, not per-session state.
     this._seenMessageIds.clear();
@@ -2373,27 +2377,48 @@ export class SessionStore {
 
   /** Interrupt current turn. Falls back to kill if interrupt fails. */
   async interrupt(): Promise<void> {
-    if (!this.run || !this.isRunning) return;
+    if (!this.run || !this.isRunning || this.interruptInFlight) return;
     if (!this.sessionAlive) {
       // Phase shows running but session is not alive — force cleanup
       this._setPhase("stopped");
       this.run = { ...this.run, status: "stopped" };
       return;
     }
+
+    const runId = this.run.id;
+    this.interruptInFlight = true;
+    this._stopping = true;
+    this._clearResponseTimeout();
+    let controlFailed = false;
+
     try {
       dbg("store", "interrupt current turn");
-      await api.sendSessionControl(this.run.id, "interrupt");
-    } catch (e) {
-      // interrupt failed (timeout or actor dead) — kill process directly
-      dbg("store", "interrupt failed, killing process:", e);
+      void api.sendSessionControl(runId, "interrupt").catch((e) => {
+        controlFailed = true;
+        dbg("store", "interrupt control failed, forcing stop:", e);
+      });
+
+      for (
+        let elapsed = 0;
+        elapsed < SessionStore._INTERRUPT_GRACE_MS && !controlFailed;
+        elapsed += SessionStore._INTERRUPT_POLL_MS
+      ) {
+        if (this.run?.id !== runId || !this.isRunning) return;
+        await new Promise((resolve) => setTimeout(resolve, SessionStore._INTERRUPT_POLL_MS));
+      }
+
+      if (this.run?.id !== runId || !this.isRunning) return;
+      dbgWarn("store", "interrupt grace period elapsed, stopping session actor", { runId });
       try {
-        await api.stopSession(this.run.id);
-      } catch {
-        // Session may already be dead
+        await api.stopSession(runId);
+      } catch (e) {
+        dbgWarn("store", "interrupt force-stop failed (forcing local state):", e);
       }
       this._setPhase("stopped");
-
-      this.run = { ...this.run, status: "stopped" };
+      if (this.run?.id === runId) this.run = { ...this.run, status: "stopped" };
+    } finally {
+      this.interruptInFlight = false;
+      this._stopping = false;
     }
   }
 

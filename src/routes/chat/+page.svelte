@@ -5673,6 +5673,8 @@
           bind:this={promptRef}
           agent={effectiveAgent}
           running={store.isActivelyRunning}
+          canInterrupt={store.isRunning}
+          interrupting={store.interruptInFlight}
           disabled={inputBlockedByPermission}
           pendingPermission={store.hasInlinePermission}
           hasRun={!!store.run}

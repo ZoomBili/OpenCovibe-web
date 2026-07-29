@@ -1,6 +1,6 @@
 {
   "name": "opencovibe",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Browser-based UI for Claude Code and Codex",
   "type": "module",
   "license": "Apache-2.0",
