@@ -1,0 +1,136 @@
+#!/bin/bash
+
+CONFIG_FILE="${TRIM_PKGETC}/opencovibe.env"
+
+fail() {
+  local message="$1"
+  printf '%s\n' "$message" >&2
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$message" > "${TRIM_TEMP_LOGFILE}"
+  fi
+  return 1
+}
+
+is_absolute_path() {
+  case "$1" in
+    /*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+find_cli() {
+  local name="$1"
+  local requested="$2"
+  local home="$3"
+  local candidate=""
+
+  if [ -n "$requested" ]; then
+    if ! is_absolute_path "$requested" || [ ! -x "$requested" ]; then
+      fail "$name 路径不存在或不可执行: $requested"
+      return 1
+    fi
+    printf '%s\n' "$requested"
+    return 0
+  fi
+
+  for candidate in \
+    "$home/.local/bin/$name" \
+    "$home/.claude/bin/$name" \
+    "$home/.claude/local/$name" \
+    "$home/.codex/bin/$name" \
+    "$home/.npm-global/bin/$name" \
+    "$home/.bun/bin/$name" \
+    /usr/local/bin/"$name" \
+    /usr/bin/"$name"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  # Use bounded path globs instead of walking an entire NAS volume. A recursive
+  # find under /vol* can keep the fnOS installer at 55% for a very long time.
+  for candidate in \
+    /vol*/[0-9]*/nodejs*/npm-global/bin/"$name" \
+    /vol*/[0-9]*/.npm-global/bin/"$name" \
+    /vol*/[0-9]*/.local/bin/"$name"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 0
+}
+
+write_config() {
+  local mode="$1"
+  local selected_port="${port:-}"
+  local selected_workspace="${wizard_workspace:-}"
+  local selected_home="${wizard_home:-}"
+  local selected_token="${wizard_token:-}"
+  local selected_claude="${wizard_claude_path:-}"
+  local selected_codex="${wizard_codex_path:-}"
+
+  if [ -r "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$CONFIG_FILE"
+  fi
+
+  if [ "$mode" = "config" ]; then
+    selected_port="${selected_port:-${OPENCOVIBE_PORT:-9476}}"
+    selected_workspace="${selected_workspace:-${OPENCOVIBE_WORKSPACE:-/vol1/1000/aicoding}}"
+    selected_home="${selected_home:-${OPENCOVIBE_HOME:-/root}}"
+    selected_token="${selected_token:-${OPENCOVIBE_TOKEN:-}}"
+    selected_claude="${selected_claude:-${OPENCOVIBE_CLAUDE_PATH:-}}"
+    selected_codex="${selected_codex:-${OPENCOVIBE_CODEX_PATH:-}}"
+  else
+    selected_port="${selected_port:-9476}"
+    selected_workspace="${selected_workspace:-/vol1/1000/aicoding}"
+    selected_home="${selected_home:-/root}"
+  fi
+
+  case "$selected_port" in
+    ''|*[!0-9]*) fail "访问端口必须是数字"; return 1 ;;
+  esac
+  if [ "$selected_port" -lt 1024 ] || [ "$selected_port" -gt 65535 ]; then
+    fail "访问端口必须在 1024 到 65535 之间"
+    return 1
+  fi
+
+  if ! is_absolute_path "$selected_workspace" || ! is_absolute_path "$selected_home"; then
+    fail "工作区和 HOME 必须是绝对路径"
+    return 1
+  fi
+  if [ ! -d "$selected_home" ]; then
+    fail "HOME 目录不存在: $selected_home"
+    return 1
+  fi
+  if [ ! -d "$selected_workspace" ] && ! mkdir -p "$selected_workspace"; then
+    fail "无法创建工作区: $selected_workspace"
+    return 1
+  fi
+
+  if [ "${#selected_token}" -lt 16 ]; then
+    fail "浏览器访问令牌至少需要 16 个字符"
+    return 1
+  fi
+
+  selected_claude=$(find_cli claude "$selected_claude" "$selected_home") || return 1
+  selected_codex=$(find_cli codex "$selected_codex" "$selected_home") || return 1
+  if [ -z "$selected_claude" ] && [ -z "$selected_codex" ]; then
+    fail "未找到 Claude Code 或 Codex，请在向导中填写至少一个 CLI 的绝对路径"
+    return 1
+  fi
+
+  mkdir -p "$TRIM_PKGETC" || return 1
+  {
+    printf 'OPENCOVIBE_PORT=%q\n' "$selected_port"
+    printf 'OPENCOVIBE_WORKSPACE=%q\n' "$selected_workspace"
+    printf 'OPENCOVIBE_HOME=%q\n' "$selected_home"
+    printf 'OPENCOVIBE_TOKEN=%q\n' "$selected_token"
+    printf 'OPENCOVIBE_CLAUDE_PATH=%q\n' "$selected_claude"
+    printf 'OPENCOVIBE_CODEX_PATH=%q\n' "$selected_codex"
+  } > "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE"
+}

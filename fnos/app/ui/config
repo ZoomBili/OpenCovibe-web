@@ -1,0 +1,19 @@
+{
+  ".url": {
+    "opencovibe-web.Application": {
+      "title": "OpenCovibe Web",
+      "desc": "Claude Code 与 Codex Web 工作台",
+      "icon": "images/icon_{0}.png",
+      "type": "url",
+      "protocol": "http",
+      "port": "${port}",
+      "url": "/",
+      "allUsers": false,
+      "control": {
+        "accessPerm": "editable",
+        "portPerm": "editable",
+        "pathPerm": "readonly"
+      }
+    }
+  }
+}

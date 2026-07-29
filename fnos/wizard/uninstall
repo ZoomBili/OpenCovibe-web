@@ -1,0 +1,11 @@
+[
+  {
+    "stepTitle": "确认卸载",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "卸载会停止 OpenCovibe Web 并删除应用配置和运行记录，不会删除工作区，也不会修改 Claude Code 或 Codex。"
+      }
+    ]
+  }
+]

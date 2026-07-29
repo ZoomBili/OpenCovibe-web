@@ -1,0 +1,10 @@
+#!/bin/bash
+
+CMD_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=opencovibe-common
+. "$CMD_DIR/opencovibe-common" || exit 1
+
+write_config install || exit 1
+chmod 755 "$TRIM_APPDEST/server/opencovibe-server-x86_64" 2>/dev/null || true
+chmod 755 "$TRIM_APPDEST/server/opencovibe-server-aarch64" 2>/dev/null || true
+exit 0

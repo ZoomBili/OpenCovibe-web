@@ -19,6 +19,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
+    "fnos:package": "node scripts/build-fnos-package.mjs",
     "server": "cargo run --manifest-path src-tauri/Cargo.toml",
     "server:release": "cargo build --release --manifest-path src-tauri/Cargo.toml",
     "test": "vitest run",

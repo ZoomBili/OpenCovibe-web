@@ -49,6 +49,14 @@ pub async fn dispatch_command(
                 .get("execution_path")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let codex_appserver_supported =
+                agent != "codex" || crate::commands::session::codex_appserver_supported();
+            let execution_path = resolve_web_execution_path(
+                &agent,
+                remote_host_name.as_deref(),
+                execution_path,
+                codex_appserver_supported,
+            )?;
             let run = crate::commands::runs::start_run(
                 prompt,
                 cwd,
@@ -1377,6 +1385,30 @@ fn normalize_top_level_keys(params: Value) -> Value {
     }
 }
 
+fn resolve_web_execution_path(
+    agent: &str,
+    remote_host_name: Option<&str>,
+    requested: Option<String>,
+    codex_appserver_supported: bool,
+) -> Result<Option<String>, String> {
+    if agent != "codex" {
+        return Ok(requested);
+    }
+    if remote_host_name.is_some() {
+        return Err("Codex remote sessions are not supported in the web server".to_string());
+    }
+    if !codex_appserver_supported {
+        return Err(
+            "The installed Codex CLI does not support app-server; upgrade Codex to use it from the web server"
+                .to_string(),
+        );
+    }
+
+    // send_chat_message is an old desktop-only pipe-exec path. Browser sessions
+    // must use the bidirectional actor even when persisted settings request exec.
+    Ok(Some("session_actor".to_string()))
+}
+
 // ── Inline _impl functions for State-dependent commands ──
 
 /// stop_run logic extracted from commands::runs::stop_run
@@ -1509,6 +1541,27 @@ mod tests {
         let nested = output.get("params").unwrap();
         assert!(nested.get("nestedCamel").is_some());
         assert!(nested.get("nested_camel").is_none());
+    }
+
+    #[test]
+    fn web_codex_forces_session_actor_over_exec_setting() {
+        let result =
+            resolve_web_execution_path("codex", None, Some("pipe_exec".to_string()), true).unwrap();
+        assert_eq!(result.as_deref(), Some("session_actor"));
+    }
+
+    #[test]
+    fn web_codex_requires_appserver_support() {
+        let error = resolve_web_execution_path("codex", None, None, false).unwrap_err();
+        assert!(error.contains("upgrade Codex"));
+    }
+
+    #[test]
+    fn web_claude_preserves_requested_execution_path() {
+        let result =
+            resolve_web_execution_path("claude", None, Some("session_actor".to_string()), false)
+                .unwrap();
+        assert_eq!(result.as_deref(), Some("session_actor"));
     }
 
     #[test]

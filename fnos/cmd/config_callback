@@ -1,0 +1,8 @@
+#!/bin/bash
+
+CMD_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=opencovibe-common
+. "$CMD_DIR/opencovibe-common" || exit 1
+
+write_config config || exit 1
+exit 0

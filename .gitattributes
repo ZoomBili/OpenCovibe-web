@@ -4,3 +4,4 @@
 *.yaml text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf
+fnos/cmd/* text eol=lf

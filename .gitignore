@@ -9,6 +9,7 @@ node_modules/
 build/
 .svelte-kit/
 dist-release/
+dist-fnos/
 
 # Rust / Tauri
 src-tauri/target/

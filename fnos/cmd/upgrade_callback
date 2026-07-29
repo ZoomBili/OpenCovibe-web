@@ -1,0 +1,5 @@
+#!/bin/bash
+
+chmod 755 "$TRIM_APPDEST/server/opencovibe-server-x86_64" 2>/dev/null || true
+chmod 755 "$TRIM_APPDEST/server/opencovibe-server-aarch64" 2>/dev/null || true
+exit 0

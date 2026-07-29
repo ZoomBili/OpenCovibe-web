@@ -1,0 +1,17 @@
+appname               = opencovibe-web
+version               = __VERSION__
+display_name          = OpenCovibe Web
+desc                  = 原生 Web 版 Claude Code 与 Codex 图形界面。使用 NAS 已安装并登录的 CLI，不包含 Docker 或内置 Agent。
+platform              = all
+source                = thirdparty
+maintainer            = ZoomBili
+maintainer_url        = https://github.com/ZoomBili/OpenCovibe-web
+distributor           = ZoomBili
+distributor_url       = https://github.com/ZoomBili/OpenCovibe-web
+desktop_uidir         = ui
+desktop_appname       = opencovibe-web.Application
+desktop_applaunchname = opencovibe-web.Application
+service_port          = 9476
+checkport             = true
+reloadui              = yes
+checksum              = __CHECKSUM__

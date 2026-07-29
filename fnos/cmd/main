@@ -1,0 +1,162 @@
+#!/bin/bash
+
+LOG_FILE="${TRIM_PKGVAR}/opencovibe.log"
+PID_FILE="${TRIM_PKGVAR}/opencovibe.pid"
+CONFIG_FILE="${TRIM_PKGETC}/opencovibe.env"
+
+log_msg() {
+  printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE"
+}
+
+fail() {
+  log_msg "$1"
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE"
+  fi
+  return 1
+}
+
+load_runtime() {
+  if [ ! -r "$CONFIG_FILE" ]; then
+    fail "OpenCovibe 配置文件不存在，请重新安装或打开应用设置"
+    return 1
+  fi
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+
+  case "${TRIM_SYS_ARCH:-$(uname -m)}" in
+    x86|x86_64|amd64) BINARY="$TRIM_APPDEST/server/opencovibe-server-x86_64" ;;
+    arm|aarch64|arm64) BINARY="$TRIM_APPDEST/server/opencovibe-server-aarch64" ;;
+    *) fail "不支持当前系统架构: ${TRIM_SYS_ARCH:-$(uname -m)}"; return 1 ;;
+  esac
+
+  if [ ! -x "$BINARY" ]; then
+    chmod 755 "$BINARY" 2>/dev/null || true
+  fi
+  if [ ! -x "$BINARY" ]; then
+    fail "OpenCovibe 服务二进制不存在或不可执行: $BINARY"
+    return 1
+  fi
+  if [ ! -d "$OPENCOVIBE_WORKSPACE" ]; then
+    fail "工作区不存在: $OPENCOVIBE_WORKSPACE"
+    return 1
+  fi
+
+  export HOME="$OPENCOVIBE_HOME"
+  export OPENCOVIBE_BIND="0.0.0.0"
+  export OPENCOVIBE_PORT
+  export OPENCOVIBE_TOKEN
+  export OPENCOVIBE_CLAUDE_PATH
+  export OPENCOVIBE_CODEX_PATH
+  export RUST_LOG="opencovibe_server=info,warn"
+
+  local path_value="/usr/local/bin:/usr/bin:/bin"
+  local cli_path=""
+  local cli_dir=""
+  local node_root=""
+  for cli_path in "$OPENCOVIBE_CLAUDE_PATH" "$OPENCOVIBE_CODEX_PATH"; do
+    if [ -n "$cli_path" ]; then
+      cli_dir=$(dirname "$cli_path")
+      path_value="$cli_dir:$path_value"
+      node_root=$(dirname "$(dirname "$cli_dir")")
+      if [ -d "$node_root/bin" ]; then
+        path_value="$node_root/bin:$path_value"
+      fi
+    fi
+  done
+  export PATH="$path_value"
+}
+
+check_process() {
+  local pid="$1"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  if [ -r "/proc/$pid/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'opencovibe-server'
+    return $?
+  fi
+  return 0
+}
+
+status_process() {
+  if [ -r "$PID_FILE" ]; then
+    local pid
+    pid=$(head -n 1 "$PID_FILE" | tr -d '[:space:]')
+    if check_process "$pid"; then
+      return 0
+    fi
+    rm -f "$PID_FILE"
+  fi
+  return 1
+}
+
+signal_process() {
+  local signal="$1"
+  local pid="$2"
+  local pgid
+  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  if [ "$pgid" = "$pid" ]; then
+    kill "-$signal" -- "-$pid" 2>/dev/null || kill "-$signal" "$pid" 2>/dev/null || true
+  else
+    kill "-$signal" "$pid" 2>/dev/null || true
+  fi
+}
+
+start_process() {
+  if status_process; then
+    return 0
+  fi
+  load_runtime || return 1
+  mkdir -p "$TRIM_PKGVAR" || return 1
+
+  log_msg "Starting OpenCovibe Web on port $OPENCOVIBE_PORT"
+  if command -v setsid >/dev/null 2>&1; then
+    (cd "$OPENCOVIBE_WORKSPACE" && exec setsid "$BINARY") >> "$LOG_FILE" 2>&1 &
+  else
+    (cd "$OPENCOVIBE_WORKSPACE" && exec "$BINARY") >> "$LOG_FILE" 2>&1 &
+  fi
+  local pid=$!
+  printf '%s\n' "$pid" > "$PID_FILE"
+
+  sleep 2
+  if ! check_process "$pid"; then
+    rm -f "$PID_FILE"
+    fail "OpenCovibe 启动后立即退出，请查看日志: $LOG_FILE"
+    return 1
+  fi
+  return 0
+}
+
+stop_process() {
+  if [ ! -r "$PID_FILE" ]; then
+    return 0
+  fi
+  local pid
+  pid=$(head -n 1 "$PID_FILE" | tr -d '[:space:]')
+  if ! check_process "$pid"; then
+    rm -f "$PID_FILE"
+    return 0
+  fi
+
+  log_msg "Stopping OpenCovibe Web (PID=$pid)"
+  signal_process TERM "$pid"
+  local elapsed=0
+  while check_process "$pid" && [ "$elapsed" -lt 15 ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if check_process "$pid"; then
+    log_msg "OpenCovibe did not stop in 15 seconds; sending SIGKILL"
+    signal_process KILL "$pid"
+    sleep 1
+  fi
+  rm -f "$PID_FILE"
+  return 0
+}
+
+case "${1:-}" in
+  start) start_process ;;
+  stop) stop_process ;;
+  status) status_process && exit 0 || exit 3 ;;
+  *) fail "Usage: $0 {start|stop|status}"; exit 1 ;;
+esac
