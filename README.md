@@ -17,7 +17,7 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 REPO="ZoomBili/OpenCovibe-web"
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
-      --version v0.2.6 \
+      --version v0.2.7 \
       --workspace /vol1/1000/aicoding（替换为你的工作空间）
 ```
 
@@ -37,11 +37,11 @@ curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-serve
 ```
 root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
-      --version v0.2.6 \
+      --version v0.2.7 \
       --workspace /vol1/1000/aicoding
 [OpenCovibe] Using existing Claude Code: /vol1/1000/nodejs24/npm-global/bin/claude
 [OpenCovibe] Using existing Codex: /vol1/1000/nodejs24/npm-global/bin/codex
-[OpenCovibe] Downloading OpenCovibe v0.2.6 for linux/amd64
+[OpenCovibe] Downloading OpenCovibe v0.2.7 for linux/amd64
   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
                                  Dload  Upload   Total   Spent    Left  Speed
   0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
@@ -50,9 +50,9 @@ root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/in
                                  Dload  Upload   Total   Spent    Left  Speed
   0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
 100   110  100   110    0     0     22      0  0:00:05  0:00:04  0:00:01    32
-opencovibe-server_v0.2.6_linux_amd64.tar.gz: OK
+opencovibe-server_v0.2.7_linux_amd64.tar.gz: OK
 [OpenCovibe] Waiting for http://127.0.0.1:9476/health
-[OpenCovibe] Installed OpenCovibe v0.2.6
+[OpenCovibe] Installed OpenCovibe v0.2.7
 [OpenCovibe] URL: http://192.168.31.2:9476
 [OpenCovibe] Token: e17d0abcc1eb3769c0e12c813184b8f90013227ee058a753
 [OpenCovibe] Service user: root
@@ -79,7 +79,7 @@ systemctl restart opencovibe
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
-      --version v0.2.6 \
+      --version v0.2.7 \
       --user alice \
       --workspace /home/alice/projects
 ```
