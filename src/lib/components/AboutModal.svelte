@@ -1,8 +1,6 @@
 <script lang="ts">
   import { renderMarkdown } from "$lib/utils/markdown";
-  import { currentLocale } from "$lib/i18n/index.svelte";
-  import readmeEn from "../../../README.md?raw";
-  import readmeZhCN from "../../../README.zh-CN.md?raw";
+  import readme from "../../../README.md?raw";
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
@@ -17,12 +15,7 @@
       .trim();
   }
 
-  const readmeHtmlMap: Record<string, string> = {
-    en: processReadme(renderMarkdown(readmeEn)),
-    "zh-CN": processReadme(renderMarkdown(readmeZhCN)),
-  };
-
-  let readmeHtml = $derived(readmeHtmlMap[currentLocale()] ?? readmeHtmlMap.en);
+  const readmeHtml = processReadme(renderMarkdown(readme));
 
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) open = false;
@@ -31,7 +24,6 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") open = false;
   }
-
 </script>
 
 {#if open}
@@ -39,6 +31,7 @@
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
     role="dialog"
     aria-modal="true"
+    tabindex="-1"
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
   >

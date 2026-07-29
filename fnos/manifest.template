@@ -1,7 +1,7 @@
 appname               = opencovibe-web
 version               = __VERSION__
 display_name          = OpenCovibe Web
-desc                  = 原生 Web 版 Claude Code 与 Codex 图形界面。使用 NAS 已安装并登录的 CLI，不包含 Docker 或内置 Agent。
+desc                  = 原生 Web 版 Claude Code 与 Codex 图形界面。1、先安装应用中心里的 nodejs24。2、npm 安装 claudecode 或 codex（建议额外搭配 cc-switch-cli 项目）。3、安装 OpenCovibe-web 应用。4、若有问题或优化 idea，可在 GitHub 提交 issue。
 platform              = all
 source                = thirdparty
 maintainer            = ZoomBili

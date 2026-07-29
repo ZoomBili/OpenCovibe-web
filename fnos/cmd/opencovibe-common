@@ -63,6 +63,63 @@ find_cli() {
   return 0
 }
 
+find_node() {
+  local requested="$1"
+  local home="$2"
+  local candidate=""
+  local cli_path=""
+  local node_root=""
+
+  if [ -n "$requested" ]; then
+    if ! is_absolute_path "$requested" || [ ! -x "$requested" ]; then
+      fail "Node.js 路径不存在或不可执行: $requested"
+      return 1
+    fi
+    printf '%s\n' "$requested"
+    return 0
+  fi
+
+  for candidate in \
+    "$home/.local/bin/node" \
+    "$home/.nvm/versions/node"/*/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node \
+    /vol*/@appcenter/nodejs*/bin/node \
+    /var/apps/nodejs*/target/bin/node \
+    /var/packages/Node.js*/target/bin/node \
+    /vol*/[0-9]*/nodejs*/node \
+    /vol*/[0-9]*/nodejs*/bin/node \
+    /vol*/[0-9]*/nodejs*/node/bin/node \
+    /vol*/[0-9]*/nodejs*/current/bin/node \
+    /vol*/[0-9]*/nodejs*/*/bin/node \
+    /vol*/[0-9]*/nodejs*/versions/node/*/bin/node; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for cli_path in "$3" "$4"; do
+    if [ -n "$cli_path" ]; then
+      node_root=$(dirname "$(dirname "$(dirname "$cli_path")")")
+      for candidate in \
+        "$node_root/node" \
+        "$node_root/bin/node" \
+        "$node_root/node/bin/node" \
+        "$node_root/current/bin/node" \
+        "$node_root"/*/bin/node \
+        "$node_root/versions/node"/*/bin/node; do
+        if [ -x "$candidate" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+    fi
+  done
+
+  return 0
+}
+
 write_config() {
   local mode="$1"
   local selected_port="${port:-}"
@@ -71,6 +128,7 @@ write_config() {
   local selected_token="${wizard_token:-}"
   local selected_claude="${wizard_claude_path:-}"
   local selected_codex="${wizard_codex_path:-}"
+  local selected_node="${wizard_node_path:-}"
 
   if [ -r "$CONFIG_FILE" ]; then
     # shellcheck disable=SC1090
@@ -84,6 +142,7 @@ write_config() {
     selected_token="${selected_token:-${OPENCOVIBE_TOKEN:-}}"
     selected_claude="${selected_claude:-${OPENCOVIBE_CLAUDE_PATH:-}}"
     selected_codex="${selected_codex:-${OPENCOVIBE_CODEX_PATH:-}}"
+    selected_node="${selected_node:-${OPENCOVIBE_NODE_PATH:-}}"
   else
     selected_port="${selected_port:-9476}"
     selected_workspace="${selected_workspace:-/vol1/1000/aicoding}"
@@ -122,6 +181,7 @@ write_config() {
     fail "未找到 Claude Code 或 Codex，请在向导中填写至少一个 CLI 的绝对路径"
     return 1
   fi
+  selected_node=$(find_node "$selected_node" "$selected_home" "$selected_claude" "$selected_codex") || return 1
 
   mkdir -p "$TRIM_PKGETC" || return 1
   {
@@ -131,6 +191,7 @@ write_config() {
     printf 'OPENCOVIBE_TOKEN=%q\n' "$selected_token"
     printf 'OPENCOVIBE_CLAUDE_PATH=%q\n' "$selected_claude"
     printf 'OPENCOVIBE_CODEX_PATH=%q\n' "$selected_codex"
+    printf 'OPENCOVIBE_NODE_PATH=%q\n' "$selected_node"
   } > "$CONFIG_FILE"
   chmod 600 "$CONFIG_FILE"
 }

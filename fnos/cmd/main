@@ -16,6 +16,57 @@ fail() {
   return 1
 }
 
+find_runtime_node() {
+  local candidate=""
+  local cli_path=""
+  local node_root=""
+
+  if [ -n "${OPENCOVIBE_NODE_PATH:-}" ] && [ -x "$OPENCOVIBE_NODE_PATH" ]; then
+    printf '%s\n' "$OPENCOVIBE_NODE_PATH"
+    return 0
+  fi
+
+  for candidate in \
+    "$OPENCOVIBE_HOME/.local/bin/node" \
+    "$OPENCOVIBE_HOME/.nvm/versions/node"/*/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node \
+    /vol*/@appcenter/nodejs*/bin/node \
+    /var/apps/nodejs*/target/bin/node \
+    /var/packages/Node.js*/target/bin/node \
+    /vol*/[0-9]*/nodejs*/node \
+    /vol*/[0-9]*/nodejs*/bin/node \
+    /vol*/[0-9]*/nodejs*/node/bin/node \
+    /vol*/[0-9]*/nodejs*/current/bin/node \
+    /vol*/[0-9]*/nodejs*/*/bin/node \
+    /vol*/[0-9]*/nodejs*/versions/node/*/bin/node; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for cli_path in "$OPENCOVIBE_CLAUDE_PATH" "$OPENCOVIBE_CODEX_PATH"; do
+    if [ -n "$cli_path" ]; then
+      node_root=$(dirname "$(dirname "$(dirname "$cli_path")")")
+      for candidate in \
+        "$node_root/node" \
+        "$node_root/bin/node" \
+        "$node_root/node/bin/node" \
+        "$node_root/current/bin/node" \
+        "$node_root"/*/bin/node \
+        "$node_root/versions/node"/*/bin/node; do
+        if [ -x "$candidate" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+    fi
+  done
+
+  return 0
+}
+
 load_runtime() {
   if [ ! -r "$CONFIG_FILE" ]; then
     fail "OpenCovibe 配置文件不存在，请重新安装或打开应用设置"
@@ -48,22 +99,25 @@ load_runtime() {
   export OPENCOVIBE_TOKEN
   export OPENCOVIBE_CLAUDE_PATH
   export OPENCOVIBE_CODEX_PATH
+  OPENCOVIBE_NODE_PATH=$(find_runtime_node)
+  export OPENCOVIBE_NODE_PATH
   export RUST_LOG="opencovibe_server=info,warn"
 
   local path_value="/usr/local/bin:/usr/bin:/bin"
   local cli_path=""
   local cli_dir=""
-  local node_root=""
   for cli_path in "$OPENCOVIBE_CLAUDE_PATH" "$OPENCOVIBE_CODEX_PATH"; do
     if [ -n "$cli_path" ]; then
       cli_dir=$(dirname "$cli_path")
       path_value="$cli_dir:$path_value"
-      node_root=$(dirname "$(dirname "$cli_dir")")
-      if [ -d "$node_root/bin" ]; then
-        path_value="$node_root/bin:$path_value"
-      fi
     fi
   done
+  if [ -n "$OPENCOVIBE_NODE_PATH" ]; then
+    path_value="$(dirname "$OPENCOVIBE_NODE_PATH"):$path_value"
+    log_msg "Using Node.js: $OPENCOVIBE_NODE_PATH"
+  else
+    log_msg "Node.js was not found; npm-installed Agent CLIs may not run"
+  fi
   export PATH="$path_value"
 }
 

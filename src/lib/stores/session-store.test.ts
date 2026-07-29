@@ -2433,6 +2433,25 @@ describe("SessionStore reducer", () => {
   });
 
   describe("interrupt", () => {
+    it("kills a pipe-exec Codex process through stopRun", async () => {
+      const stopRun = vi.mocked(api.stopRun);
+      const sendControl = vi.mocked(api.sendSessionControl);
+      stopRun.mockResolvedValue(true);
+      store.run = makeRun("run-pipe-interrupt", {
+        agent: "codex",
+        execution_path: "pipe_exec",
+      });
+      store.phase = "running";
+
+      await store.interrupt();
+
+      expect(stopRun).toHaveBeenCalledWith("run-pipe-interrupt");
+      expect(sendControl).not.toHaveBeenCalled();
+      expect(store.phase).toBe("stopped");
+      expect(store.run?.status).toBe("stopped");
+      stopRun.mockReset().mockResolvedValue(true);
+    });
+
     it("clears the busy state when the CLI transitions to idle", async () => {
       vi.useFakeTimers();
       const sendControl = vi.mocked(api.sendSessionControl);

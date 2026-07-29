@@ -67,6 +67,12 @@
         "field": "wizard_codex_path",
         "label": "Codex 路径",
         "placeholder": "留空自动查找"
+      },
+      {
+        "type": "text",
+        "field": "wizard_node_path",
+        "label": "Node.js 路径",
+        "placeholder": "留空自动查找，例如 /path/to/node"
       }
     ]
   }

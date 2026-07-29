@@ -181,12 +181,14 @@ pub async fn check_codex_auth() -> Result<CodexAuthResult, String> {
         auth_method
     );
 
+    let status_text = if stdout.is_empty() { stderr } else { stdout };
+
     Ok(CodexAuthResult {
         installed: true,
         version: cli_check.version,
         logged_in,
         auth_method,
-        status_text: Some(stdout),
+        status_text: Some(status_text),
     })
 }
 

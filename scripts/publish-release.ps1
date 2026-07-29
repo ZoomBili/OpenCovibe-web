@@ -215,7 +215,6 @@ try {
         }
         Copy-Item $binaryPath (Join-Path $packagePath "opencovibe-server")
         Copy-Item (Join-Path $Root "README.md") $packagePath
-        Copy-Item (Join-Path $Root "README.zh-CN.md") $packagePath
 
         tar.exe -C $DistPath -czf $archivePath $packageName
         if ($LASTEXITCODE -ne 0) { throw "Failed to create $archivePath" }
@@ -223,6 +222,17 @@ try {
         Write-Utf8NoBom $checksumPath "$hash  $([System.IO.Path]::GetFileName($archivePath))`n"
         $assets += $archivePath, $checksumPath
     }
+
+    Write-Step "Building fnOS package"
+    npm run fnos:package -- --version $Version --output $DistPath
+    if ($LASTEXITCODE -ne 0) { throw "fnOS package build failed" }
+    $releaseVersion = $Version.TrimStart("v")
+    $fnosPackagePath = Join-Path $DistPath "opencovibe-web_v$releaseVersion.fpk"
+    $fnosChecksumPath = "$fnosPackagePath.sha256"
+    if (-not (Test-Path $fnosPackagePath) -or -not (Test-Path $fnosChecksumPath)) {
+        throw "fnOS package assets were not generated"
+    }
+    $assets += $fnosPackagePath, $fnosChecksumPath
 
     Write-Step "Publishing $Version to $Repository"
     $token = Get-GitHubToken

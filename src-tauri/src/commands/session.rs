@@ -1859,24 +1859,32 @@ pub(crate) fn codex_approval_for(perm: Option<&str>) -> String {
     }
 }
 
-/// Auto-fallback probe: does the installed Codex CLI support the app-server transport?
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodexAppServerCapabilities {
+    supported: bool,
+    supports_default_mode_request_user_input: bool,
+}
+
+fn parse_codex_appserver_capabilities(
+    help_succeeded: bool,
+    help_text: &str,
+) -> CodexAppServerCapabilities {
+    CodexAppServerCapabilities {
+        supported: help_succeeded,
+        supports_default_mode_request_user_input: help_succeeded && help_text.contains("--enable"),
+    }
+}
+
+/// Probe the configured Codex CLI for app-server capabilities.
 ///
-/// Codex now defaults to app-server (see `commands/runs.rs`), but an old/incompatible CLI
-/// would reject `codex app-server --enable …` and the session would die before the handshake
-/// (process spawns, then exits — NOT a spawn error, so it can't be caught at spawn time).
-/// To avoid that, we probe once: `codex app-server --help` exits 0 AND lists the `--enable`
-/// option only on a CLI new enough to run our interactive transport. If not, the run falls
-/// back to the one-shot `exec` path. `--help` returns immediately, so this is a cheap sync
-/// check; the result is cached for the process lifetime (re-probed only after an app restart,
-/// e.g. following a Codex upgrade).
-pub(crate) fn codex_appserver_supported() -> bool {
+/// Older Codex versions expose `app-server` without the newer `--enable` option. They still
+/// support browser conversations, but not the optional default-mode `request_user_input`
+/// enhancement. Cache the two capabilities separately so those versions remain usable.
+fn codex_appserver_capabilities() -> CodexAppServerCapabilities {
     use std::sync::OnceLock;
-    static CACHE: OnceLock<bool> = OnceLock::new();
+    static CACHE: OnceLock<CodexAppServerCapabilities> = OnceLock::new();
     *CACHE.get_or_init(|| {
-        let Some(bin) = claude_stream::which_binary("codex") else {
-            log::warn!("[codex] app-server probe: codex binary not found → exec fallback");
-            return false;
-        };
+        let bin = claude_stream::resolve_codex_path();
         let out = std::process::Command::new(&bin)
             .arg("app-server")
             .arg("--help")
@@ -1889,31 +1897,37 @@ pub(crate) fn codex_appserver_supported() -> bool {
                     String::from_utf8_lossy(&o.stdout),
                     String::from_utf8_lossy(&o.stderr)
                 );
-                // Need both the subcommand (exit 0) and the `--enable` feature flag we rely on.
-                let ok = o.status.success() && txt.contains("--enable");
-                if ok {
-                    log::debug!("[codex] app-server supported → using interactive transport");
+                let capabilities = parse_codex_appserver_capabilities(o.status.success(), &txt);
+                if capabilities.supported {
+                    log::debug!(
+                        "[codex] app-server supported (binary={}, default-mode input={})",
+                        bin,
+                        capabilities.supports_default_mode_request_user_input
+                    );
                 } else {
                     log::warn!(
-                        "[codex] app-server unsupported (help exit={:?}, has --enable={}) → exec fallback",
-                        o.status.code(),
-                        txt.contains("--enable")
+                        "[codex] app-server unsupported (binary={}, help exit={:?})",
+                        bin,
+                        o.status.code()
                     );
                 }
-                ok
+                capabilities
             }
             Err(e) => {
-                log::warn!("[codex] app-server probe failed: {} → exec fallback", e);
-                false
+                log::warn!("[codex] app-server probe failed (binary={}): {}", bin, e);
+                CodexAppServerCapabilities::default()
             }
         }
     })
 }
 
+pub(crate) fn codex_appserver_supported() -> bool {
+    codex_appserver_capabilities().supported
+}
+
 /// Spawn `codex app-server` (bidirectional JSON-RPC) for an interactive Codex session.
-/// Local only — remote/SSH app-server is out of scope for v1. The `--enable
-/// default_mode_request_user_input` flag is REQUIRED for the multiple-choice tool to fire
-/// in normal sessions (verified codex 0.136 — otherwise "unavailable in Default mode").
+/// Local only — remote/SSH app-server is out of scope for v1. When supported, the `--enable
+/// default_mode_request_user_input` flag unlocks multiple-choice prompts in normal sessions.
 async fn spawn_codex_appserver_process(
     cwd: &str,
     settings: &adapter::AdapterSettings,
@@ -1929,16 +1943,21 @@ async fn spawn_codex_appserver_process(
 > {
     use tokio::process::Command;
 
-    let codex_bin = claude_stream::which_binary("codex")
-        .ok_or_else(|| "Codex CLI not found in PATH".to_string())?;
+    let capabilities = codex_appserver_capabilities();
+    if !capabilities.supported {
+        return Err("The configured Codex CLI does not support app-server".to_string());
+    }
+    let codex_bin = claude_stream::resolve_codex_path();
 
-    let mut args: Vec<String> = vec![
-        "app-server".into(),
-        "--enable".into(),
-        "default_mode_request_user_input".into(),
-        "-c".into(),
-        "suppress_unstable_features_warning=true".into(),
-    ];
+    let mut args: Vec<String> = vec!["app-server".into()];
+    if capabilities.supports_default_mode_request_user_input {
+        args.extend([
+            "--enable".into(),
+            "default_mode_request_user_input".into(),
+            "-c".into(),
+            "suppress_unstable_features_warning=true".into(),
+        ]);
+    }
 
     // Third-party provider overrides (shared with the exec + side-question paths). The provider
     // API key is injected as an env var (env_key=api_key) below, mirroring chat.rs's run_agent.
@@ -3171,6 +3190,28 @@ mod tests {
     #[test]
     fn no_skip_when_whitespace_only() {
         assert!(!should_skip_env_injection(Some("  "), Some("")));
+    }
+
+    #[test]
+    fn appserver_without_enable_flag_remains_supported() {
+        let capabilities = parse_codex_appserver_capabilities(true, "Codex app server\nUsage");
+        assert!(capabilities.supported);
+        assert!(!capabilities.supports_default_mode_request_user_input);
+    }
+
+    #[test]
+    fn appserver_with_enable_flag_supports_default_mode_input() {
+        let capabilities =
+            parse_codex_appserver_capabilities(true, "Options:\n  --enable <FEATURE>");
+        assert!(capabilities.supported);
+        assert!(capabilities.supports_default_mode_request_user_input);
+    }
+
+    #[test]
+    fn failed_appserver_help_is_unsupported() {
+        let capabilities =
+            parse_codex_appserver_capabilities(false, "unrecognized subcommand 'app-server'");
+        assert_eq!(capabilities, CodexAppServerCapabilities::default());
     }
 
     // ── config_value_has_auth_key tests (pure function, zero filesystem dependency) ──

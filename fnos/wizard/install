@@ -103,8 +103,15 @@
         "placeholder": "留空自动查找"
       },
       {
+        "type": "text",
+        "field": "wizard_node_path",
+        "label": "Node.js 路径",
+        "initValue": "",
+        "placeholder": "留空自动查找，例如 /path/to/node"
+      },
+      {
         "type": "tips",
-        "helpText": "至少需要一个 CLI。自动查找失败时，请填写绝对路径，例如 /vol1/1000/nodejs24/npm-global/bin/claude。"
+        "helpText": "至少需要一个 CLI。npm 安装的 CLI 还需要 Node.js；自动查找失败时请填写各自的绝对路径。"
       }
     ]
   }

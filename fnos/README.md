@@ -17,3 +17,7 @@ Install the `.fpk` from fnOS App Center's manual installation page. During
 installation, set a browser token, workspace, CLI login HOME, and optional
 absolute Claude Code/Codex paths. At least one existing and authenticated CLI
 is required.
+
+The local release publisher builds this FPK after the Linux `amd64` and
+`arm64` binaries, then uploads the package and its SHA256 file to the matching
+GitHub Release together with the Linux archives.

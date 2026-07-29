@@ -68,6 +68,36 @@ pub async fn dispatch_command(
             )?;
             serde_json::to_value(run).map_err(|e| e.to_string())
         }
+        "send_chat_message" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let message = extract_str(&params, "message")?;
+            let attachments = params
+                .get("attachments")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| format!("invalid attachments: {}", error))?;
+            let model = params
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(String::from);
+            let client_uuid = params
+                .get("client_uuid")
+                .and_then(|value| value.as_str())
+                .map(String::from);
+            crate::commands::chat::send_chat_message(
+                &state.process_map,
+                &state.emitter,
+                run_id,
+                message,
+                attachments,
+                model,
+                client_uuid,
+            )
+            .await?;
+            Ok(json!(true))
+        }
         "rename_run" => {
             let id = extract_str(&params, "id")?;
             let name = extract_str(&params, "name")?;
@@ -1329,8 +1359,7 @@ pub async fn dispatch_command(
         | "run_claude_login"
         | "run_codex_login"
         | "run_codex_logout"
-        | "check_for_updates"
-        | "send_chat_message" => Err("desktop only".to_string()),
+        | "check_for_updates" => Err("desktop only".to_string()),
 
         // ── Explicitly blocked ──
         "load_run_data" => Err("unknown method".to_string()),
@@ -1397,16 +1426,14 @@ fn resolve_web_execution_path(
     if remote_host_name.is_some() {
         return Err("Codex remote sessions are not supported in the web server".to_string());
     }
-    if !codex_appserver_supported {
-        return Err(
-            "The installed Codex CLI does not support app-server; upgrade Codex to use it from the web server"
-                .to_string(),
-        );
+    if requested.is_some() {
+        return Ok(requested);
     }
-
-    // send_chat_message is an old desktop-only pipe-exec path. Browser sessions
-    // must use the bidirectional actor even when persisted settings request exec.
-    Ok(Some("session_actor".to_string()))
+    if codex_appserver_supported {
+        Ok(None)
+    } else {
+        Ok(Some("pipe_exec".to_string()))
+    }
 }
 
 // ── Inline _impl functions for State-dependent commands ──
@@ -1544,16 +1571,22 @@ mod tests {
     }
 
     #[test]
-    fn web_codex_forces_session_actor_over_exec_setting() {
+    fn web_codex_preserves_explicit_exec_setting() {
         let result =
             resolve_web_execution_path("codex", None, Some("pipe_exec".to_string()), true).unwrap();
-        assert_eq!(result.as_deref(), Some("session_actor"));
+        assert_eq!(result.as_deref(), Some("pipe_exec"));
     }
 
     #[test]
-    fn web_codex_requires_appserver_support() {
-        let error = resolve_web_execution_path("codex", None, None, false).unwrap_err();
-        assert!(error.contains("upgrade Codex"));
+    fn web_codex_falls_back_to_exec_without_appserver() {
+        let result = resolve_web_execution_path("codex", None, None, false).unwrap();
+        assert_eq!(result.as_deref(), Some("pipe_exec"));
+    }
+
+    #[test]
+    fn web_codex_defers_supported_default_to_run_settings() {
+        let result = resolve_web_execution_path("codex", None, None, true).unwrap();
+        assert_eq!(result, None);
     }
 
     #[test]

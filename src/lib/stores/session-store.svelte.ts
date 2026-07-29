@@ -2378,6 +2378,20 @@ export class SessionStore {
   /** Interrupt current turn. Falls back to kill if interrupt fails. */
   async interrupt(): Promise<void> {
     if (!this.run || !this.isRunning || this.interruptInFlight) return;
+    if (!this.useStreamSession) {
+      this.interruptInFlight = true;
+      this._stopping = true;
+      this._clearResponseTimeout();
+      try {
+        await api.stopRun(this.run.id);
+      } finally {
+        this._setPhase("stopped");
+        this.run = { ...this.run, status: "stopped" };
+        this.interruptInFlight = false;
+        this._stopping = false;
+      }
+      return;
+    }
     if (!this.sessionAlive) {
       // Phase shows running but session is not alive — force cleanup
       this._setPhase("stopped");
@@ -2428,7 +2442,7 @@ export class SessionStore {
     this._stopping = true;
     this._clearResponseTimeout();
     try {
-      if (this.sessionAlive) {
+      if (this.useStreamSession && this.sessionAlive) {
         // Try graceful interrupt first if agent is currently running.
         // Skip during "spawning" — CLI hasn't initialized yet, interrupt would
         // wait for a control_response that may never come.
