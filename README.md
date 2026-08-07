@@ -8,6 +8,7 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 - 增加“继续”对话的快捷按钮
 - 支持快速下拉配置（回车键 或 ctrl+回车）发送对话
 - 支持对话结束后发送企微消息、浏览器铃声
+- 飞牛应用
 
 
 ## 一键安装
