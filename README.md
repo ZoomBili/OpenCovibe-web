@@ -5,6 +5,7 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 本项目github开源地址为：[OpenCovibe-web](https://github.com/ZoomBili/OpenCovibe-web "OpenCovibe-web")
 
 ## 计划中的功能清单
+- 修复首次对话需使用“自动”模式后才能使用“免审”模式的bug
 - 增加“继续”对话的快捷按钮
 - 支持快速下拉配置（回车键 或 ctrl+回车）发送对话
 - 支持对话结束后发送企微消息、浏览器铃声
