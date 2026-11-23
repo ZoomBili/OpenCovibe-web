@@ -1428,6 +1428,7 @@
   "prompt_screenshot": "Capture screenshot",
 
   "prompt_slashCommands": "Slash commands (/)",
+  "quickAction_continue": "Continue",
   "quickAction_compact": "Compact",
   "quickAction_copy": "Copy",
   "quickAction_diff": "Diff",

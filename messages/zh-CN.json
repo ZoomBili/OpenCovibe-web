@@ -1428,6 +1428,7 @@
   "prompt_screenshot": "截取屏幕",
 
   "prompt_slashCommands": "斜杠命令 (/)",
+  "quickAction_continue": "继续",
   "quickAction_compact": "压缩上下文",
   "quickAction_copy": "复制回复",
   "quickAction_diff": "改动",

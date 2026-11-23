@@ -248,6 +248,10 @@ struct SessionActor {
     /// Live per-turn Codex overrides (model/effort/approval/sandbox) set via control subtypes
     /// without respawning. Injected into each `turn/start`. Ignored for Claude.
     codex_overrides: CodexTurnOverrides,
+    /// Claude root/sudo spawn workaround: the CLI was launched in a safe permission mode because
+    /// `bypassPermissions`/`dontAsk` are rejected at startup under root. Applied via the control
+    /// protocol once `session_init` confirms the CLI is ready; holds turn dispatch until then.
+    pending_permission_override: Option<String>,
     /// Current RunState string — identity dedup: skip emit if unchanged.
     state: String,
     stdin: Option<ChildStdin>,
@@ -328,6 +332,10 @@ pub fn spawn_actor(
     // Codex app-server transport: the driver + its handshake messages. `None`/empty = Claude.
     codex: Option<CodexAppServer>,
     codex_startup: Vec<Value>,
+    /// Claude root/sudo spawn workaround: the CLI was launched in a safe permission mode because
+    /// `bypassPermissions`/`dontAsk` are rejected at startup under root. Applied via the control
+    /// protocol once `session_init` confirms the CLI is ready; holds turn dispatch until then.
+    pending_permission_override: Option<String>,
 ) -> SessionActorHandle {
     let tag = Arc::new(());
     let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCommand>(64);
@@ -351,6 +359,7 @@ pub fn spawn_actor(
         codex_startup,
         codex_ready: false,
         codex_overrides: CodexTurnOverrides::default(),
+        pending_permission_override,
         state: String::new(),
         stdin: Some(stdin),
         child: Some(child),
@@ -662,6 +671,12 @@ impl SessionActor {
         }
         // Codex: hold dispatch until the app-server thread is open (thread/started seen).
         if self.codex.is_some() && !self.codex_ready {
+            return;
+        }
+        // Root/sudo spawn workaround: hold dispatch until the deferred permission-mode override
+        // has been applied (written via control protocol in the session_init handler). This
+        // guarantees the first user turn already runs in the requested mode.
+        if self.pending_permission_override.is_some() {
             return;
         }
 
@@ -2176,24 +2191,52 @@ impl SessionActor {
                     continue; // RunState handled
                 }
                 BusEvent::SessionInit {
-                    session_id: Some(ref sid),
+                    session_id: ref sid,
                     ..
                 } => {
-                    log::debug!("[actor] captured session_id={}", sid);
-                    // Single with_meta write: session_id + conversation_ref (avoid double write + intermediate state)
-                    let sid_clone = sid.clone();
-                    if let Err(e) = storage::runs::with_meta(&self.run_id, |meta| {
-                        meta.session_id = Some(sid_clone.clone());
-                        meta.conversation_ref =
-                            Some(crate::models::ConversationRef::ClaudeSession(sid_clone));
-                        Ok(())
-                    }) {
-                        log::warn!(
-                            "[actor] failed to persist session_id + conversation_ref: {}",
-                            e
-                        );
+                    if let Some(inner_sid) = sid {
+                        log::debug!("[actor] captured session_id={}", inner_sid);
+                        // Single with_meta write: session_id + conversation_ref (avoid double write + intermediate state)
+                        let sid_clone = inner_sid.clone();
+                        if let Err(e) = storage::runs::with_meta(&self.run_id, |meta| {
+                            meta.session_id = Some(sid_clone.clone());
+                            meta.conversation_ref =
+                                Some(crate::models::ConversationRef::ClaudeSession(sid_clone));
+                            Ok(())
+                        }) {
+                            log::warn!(
+                                "[actor] failed to persist session_id + conversation_ref: {}",
+                                e
+                            );
+                        }
                     }
                     self.persist_and_emit(&event);
+                    // Root/sudo spawn workaround: the CLI was launched in a safe permission mode
+                    // (see session.rs claude_spawn_permission). Now that session_init confirms it
+                    // is ready, re-apply the requested mode via the control protocol, then release
+                    // the dispatch hold so the (queued) first user turn runs in that mode.
+                    if let Some(mode) = self.pending_permission_override.take() {
+                        let override_request_id = format!("ocv_ctrl_{}", uuid::Uuid::new_v4());
+                        let payload = serde_json::json!({
+                            "type": "control_request",
+                            "request_id": override_request_id,
+                            "request": {
+                                "subtype": "set_permission_mode",
+                                "mode": mode,
+                            },
+                        });
+                        if let Err(e) = self
+                            .write_json_line(&payload, "claude set_permission_mode")
+                            .await
+                        {
+                            log::warn!(
+                                "[actor] failed to apply deferred permission mode for run_id={}: {}",
+                                self.run_id,
+                                e
+                            );
+                        }
+                        self.try_dispatch().await;
+                    }
                 }
                 _ => {
                     // Inject backend-authoritative turn_index into UsageUpdate for user turns

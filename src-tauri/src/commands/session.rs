@@ -543,6 +543,22 @@ pub(crate) async fn start_session_impl(
         adapter_settings.permission_mode = Some(override_mode.clone());
     }
 
+    // 2a-2. Root/sudo workaround: Claude Code refuses to start with `--permission-mode
+    //     bypassPermissions` (which it equates to --dangerously-skip-permissions) when the
+    //     process runs as root/sudo — it errors on stderr before any session exists. Spawn in
+    //     a safe mode instead and raise to the intended mode via the control protocol once the
+    //     CLI reports session_init (that path applies live and is allowed under root). The actor
+    //     holds the first user turn until the override lands so the first message already runs
+    //     in the requested mode.
+    let pending_permission_override = if meta.agent == "claude" {
+        let (spawn_mode, pending) =
+            claude_spawn_permission(&adapter_settings.permission_mode, is_root());
+        adapter_settings.permission_mode = spawn_mode;
+        pending
+    } else {
+        None
+    };
+
     // 2b. Resolve remote host from RunMeta (audit #2: single truth source)
     let remote = resolve_remote_host(&meta)?;
     // Use per-session platform_id: prefer IPC param, fallback to RunMeta's saved platform_id
@@ -728,6 +744,7 @@ pub(crate) async fn start_session_impl(
         initial_auto_ctx_id,
         codex,
         codex_startup,
+        pending_permission_override,
     );
     let cmd_tx = actor_handle.cmd_tx.clone();
     sessions.lock().await.insert(run_id.clone(), actor_handle);
@@ -1411,6 +1428,7 @@ pub(crate) async fn approve_session_tool_impl(
         normal + 1,
         None, // Claude transport
         vec![],
+        None, // no deferred permission-mode override (resume after tool approval)
     );
     sessions.lock().await.insert(run_id.clone(), actor_handle);
 
@@ -1856,6 +1874,41 @@ pub(crate) fn codex_approval_for(perm: Option<&str>) -> String {
     match perm {
         Some("bypassPermissions") | Some("dontAsk") => "never".to_string(),
         _ => "on-request".to_string(),
+    }
+}
+
+/// Whether the server process runs with root privileges.
+///
+/// Claude Code refuses to start with `--permission-mode bypassPermissions` (which it maps to
+/// `--dangerously-skip-permissions`) under root/sudo. Non-unix platforms never see this.
+#[cfg(unix)]
+pub(crate) fn is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_root() -> bool {
+    false
+}
+
+/// Compute the Claude spawn `--permission-mode` value and any deferred override for the actor.
+///
+/// Returns `(spawn_mode, pending_override)`:
+/// - Normal case: spawn with the requested mode, no deferred override.
+/// - root/sudo + `bypassPermissions`/`dontAsk`: Claude refuses those at startup, so spawn in a
+///   root-safe mode (`acceptEdits`) and return the requested mode as a deferred override that the
+///   actor applies via the control protocol once the CLI reports `session_init`.
+pub(crate) fn claude_spawn_permission(
+    permission_mode: &Option<String>,
+    running_as_root: bool,
+) -> (Option<String>, Option<String>) {
+    let Some(mode) = permission_mode.as_deref() else {
+        return (None, None);
+    };
+    if running_as_root && (mode == "bypassPermissions" || mode == "dontAsk") {
+        (Some("acceptEdits".to_string()), Some(mode.to_string()))
+    } else {
+        (permission_mode.clone(), None)
     }
 }
 
@@ -2934,6 +2987,43 @@ mod tests {
 
         assert_eq!(resolved.auth_token.as_deref(), Some("real-key-123"));
         assert!(resolved.api_key.is_none());
+    }
+
+    #[test]
+    fn claude_spawn_permission_leaves_safe_modes_alone() {
+        let normal = claude_spawn_permission(&Some("acceptEdits".to_string()), true);
+        assert_eq!(normal.0.as_deref(), Some("acceptEdits"));
+        assert!(normal.1.is_none());
+
+        let default_mod = claude_spawn_permission(&Some("default".to_string()), true);
+        assert_eq!(default_mod.0.as_deref(), Some("default"));
+        assert!(default_mod.1.is_none());
+
+        // Root does not affect codex — helper is claude-focused and leaves none untouched.
+        let none = claude_spawn_permission(&None, true);
+        assert!(none.0.is_none());
+        assert!(none.1.is_none());
+    }
+
+    #[test]
+    fn claude_spawn_permission_downgrades_bypass_as_root() {
+        // Root + bypassPermissions → spawn safe (acceptEdits) + deferred override.
+        let root_bypass = claude_spawn_permission(&Some("bypassPermissions".to_string()), true);
+        assert_eq!(root_bypass.0.as_deref(), Some("acceptEdits"));
+        assert_eq!(root_bypass.1.as_deref(), Some("bypassPermissions"));
+
+        // Same downgrade for dontAsk.
+        let root_dont_ask = claude_spawn_permission(&Some("dontAsk".to_string()), true);
+        assert_eq!(root_dont_ask.0.as_deref(), Some("acceptEdits"));
+        assert_eq!(root_dont_ask.1.as_deref(), Some("dontAsk"));
+    }
+
+    #[test]
+    fn claude_spawn_permission_non_root_keeps_bypass() {
+        // Non-root: spawn directly in the requested mode, no deferred override.
+        let non_root = claude_spawn_permission(&Some("bypassPermissions".to_string()), false);
+        assert_eq!(non_root.0.as_deref(), Some("bypassPermissions"));
+        assert!(non_root.1.is_none());
     }
 
     #[test]

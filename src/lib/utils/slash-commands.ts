@@ -196,6 +196,13 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _excludeAgents: ["claude"],
   },
   {
+    name: "continue",
+    description: "Continue the current task from where it left off",
+    aliases: [],
+    _virtual: true,
+    _action: "continue",
+  },
+  {
     name: "compact",
     // Codex `thread/compact/start`: summarize + clear history, keep going.
     // Claude CLI returns its own /compact (passthrough), so Codex-only here.
@@ -688,6 +695,7 @@ export function extractSlashQuery(inputText: string): string | null {
 
 /** Ordered list of command names shown as quick-action pills above the action bar. */
 const CLAUDE_QUICK_ACTIONS: readonly string[] = [
+  "continue",
   "compact",
   "copy",
   "model",
@@ -697,6 +705,7 @@ const CLAUDE_QUICK_ACTIONS: readonly string[] = [
 ] as const;
 
 const CODEX_QUICK_ACTIONS: readonly string[] = [
+  "continue",
   "compact",
   "copy",
   "diff",

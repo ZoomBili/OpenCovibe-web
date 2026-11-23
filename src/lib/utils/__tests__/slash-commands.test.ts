@@ -739,12 +739,13 @@ describe("getQuickActions", () => {
   });
 
   it("surfaces /compact as a Codex quick action", () => {
-    // Codex pills lead with compact (Wave-3). For Codex, mergeWithVirtual
-    // produces the compact virtual since the CLI returns no commands.
+    // Codex pills lead with continue (quick action), then compact (Wave-3). For
+    // Codex, mergeWithVirtual produces the compact virtual since the CLI returns
+    // no commands.
     const merged = mergeWithVirtual([], "codex");
     const result = getQuickActions(merged, "codex");
     expect(result.map((c) => c.name)).toContain("compact");
-    expect(result[0].name).toBe("compact");
+    expect(result[0].name).toBe("continue");
   });
 });
 
@@ -1379,6 +1380,28 @@ describe("/clear virtual command", () => {
 
   it("parseVirtualAction recognizes /clear", () => {
     expect(parseVirtualAction("/clear")).toEqual({ name: "clear", args: "" });
+  });
+});
+
+// ── /continue virtual command (quick "continue" pill) ──
+
+describe("/continue virtual command", () => {
+  it("continue is in VIRTUAL_COMMANDS with _action continue", () => {
+    const cmd = VIRTUAL_COMMANDS.find((c) => c.name === "continue");
+    expect(cmd).toBeDefined();
+    expect(cmd!["_virtual"]).toBe(true);
+    expect(cmd!["_action"]).toBe("continue");
+  });
+
+  it("is the first quick-action pill for both agents", () => {
+    const claude = getQuickActions(mergeWithVirtual([], "claude"), "claude");
+    const codex = getQuickActions(mergeWithVirtual([], "codex"), "codex");
+    expect(claude[0].name).toBe("continue");
+    expect(codex[0].name).toBe("continue");
+  });
+
+  it("parseVirtualAction recognizes /continue", () => {
+    expect(parseVirtualAction("/continue")).toEqual({ name: "continue", args: "" });
   });
 });
 

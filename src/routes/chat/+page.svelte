@@ -3607,6 +3607,10 @@
         dbgWarn("chat", "codex compact failed", err);
         appendCommandOutput(t("codexCompact_failed", { error: msg }));
       }
+    } else if (action === "continue") {
+      // "Continue" quick action: nudge the agent to pick up the task where it
+      // left off by sending the localized continue prompt as a normal message.
+      await sendMessage(t("quickAction_continue"), []);
     } else if (action === "codex-rewind") {
       if (effectiveAgent !== "codex") return;
       if (!store.run || !store.sessionAlive) {
