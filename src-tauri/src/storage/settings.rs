@@ -1,4 +1,4 @@
-use crate::models::{AgentSettings, AllSettings, UserSettings};
+use crate::models::{AgentSettings, AllSettings, NotificationSettings, UserSettings};
 use std::fs;
 use std::path::PathBuf;
 
@@ -688,6 +688,20 @@ pub fn update_user_settings(patch: serde_json::Value) -> Result<UserSettings, St
             .filter(|s| !s.is_empty());
         // The resolved-path cache must re-evaluate the override on the next spawn. (#155)
         crate::agent::claude_stream::invalidate_claude_path_cache();
+    }
+    if let Some(v) = patch.get("notifications") {
+        if v.is_null() {
+            all.user.notifications = NotificationSettings::default();
+        } else {
+            all.user.notifications = serde_json::from_value(v.clone())
+                .map_err(|e| format!("Invalid notifications: {}", e))?;
+            log::debug!(
+                "[storage/settings] notifications patched: enabled={}, wecom={}, http={}",
+                all.user.notifications.enabled,
+                all.user.notifications.wecom.enabled,
+                all.user.notifications.http.enabled,
+            );
+        }
     }
     all.user.updated_at = crate::models::now_iso();
     save(&all)?;

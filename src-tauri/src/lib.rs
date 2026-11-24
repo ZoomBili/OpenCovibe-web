@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod commands;
 pub mod models;
+pub mod notifications;
 pub mod pricing;
 pub mod process_ext;
 pub mod storage;

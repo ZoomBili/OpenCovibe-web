@@ -178,7 +178,53 @@ export interface UserSettings {
   web_server_tunnel_url?: string;
   /** Custom path/program to launch the Claude CLI (default: auto-detect). (#155) */
   claude_path?: string;
+  /** Outbound notifications (WeCom webhook / custom HTTP endpoint). */
+  notifications?: NotificationSettings;
   updated_at: string;
+}
+
+// ── Notification settings ──
+
+export interface NotificationHeader {
+  key: string;
+  value: string;
+}
+
+export interface WecomNotificationSettings {
+  enabled: boolean;
+  /** Full group-robot webhook URL. */
+  webhook_url: string;
+  mentioned_mobiles?: string[];
+}
+
+export interface HttpNotificationSettings {
+  enabled: boolean;
+  url: string;
+  /** GET | POST | PUT | PATCH */
+  method: string;
+  headers?: NotificationHeader[];
+  /** Optional template; placeholder values are inserted per content-type. */
+  body_template?: string;
+}
+
+export interface NotificationSettings {
+  enabled: boolean;
+  on_complete: boolean;
+  on_error: boolean;
+  on_permission: boolean;
+  /** "zh-CN" | "en" */
+  language: string;
+  /** "basename" (directory name only) | "full" (absolute path). */
+  project_path_mode: string;
+  /** Base URL for clickable {run_url} links (e.g. https://code.example.com). */
+  link_base_url?: string;
+  wecom: WecomNotificationSettings;
+  http: HttpNotificationSettings;
+}
+
+export interface NotificationTestResult {
+  ok: boolean;
+  message: string;
 }
 
 // ── Remote SSH types ──
@@ -709,7 +755,8 @@ export interface MarketplacePlugin {
   source?: unknown;
   tags: string[];
   strict?: boolean;
-  lsp_servers?: unknown;
+  /** Marketplace manifests use camelCase; matches `#[serde(rename = "lspServers")]`. */
+  lspServers?: unknown;
   marketplace_name?: string;
   install_count?: number;
   components: PluginComponents;

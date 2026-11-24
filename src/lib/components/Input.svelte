@@ -3,6 +3,7 @@
     value = $bindable(""),
     placeholder = "",
     type = "text",
+    id = undefined,
     disabled = false,
     class: className = "",
     oninput,
@@ -12,6 +13,7 @@
     value?: string;
     placeholder?: string;
     type?: string;
+    id?: string;
     disabled?: boolean;
     class?: string;
     oninput?: (e: Event) => void;
@@ -21,6 +23,7 @@
 </script>
 
 <input
+  {id}
   {type}
   {placeholder}
   {disabled}

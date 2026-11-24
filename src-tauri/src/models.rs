@@ -282,7 +282,122 @@ pub struct UserSettings {
     /// claude-tap script). Empty/None = auto-detect. (#155)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_path: Option<String>,
+    /// Outbound notifications (WeCom webhook / custom HTTP endpoint).
+    #[serde(default)]
+    pub notifications: NotificationSettings,
     pub updated_at: String,
+}
+
+// ── Notification settings ──
+
+fn default_notification_language() -> String {
+    "zh-CN".to_string()
+}
+
+fn default_project_path_mode() -> String {
+    "basename".to_string()
+}
+
+fn default_http_method() -> String {
+    "POST".to_string()
+}
+
+/// Outbound notification configuration. Sent after a turn completes/fails or
+/// when the agent is waiting for an approval. Stored in `~/.opencovibe/settings.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub on_complete: bool,
+    #[serde(default = "default_true")]
+    pub on_error: bool,
+    #[serde(default = "default_true")]
+    pub on_permission: bool,
+    /// Notification text language: "zh-CN" or "en".
+    #[serde(default = "default_notification_language")]
+    pub language: String,
+    /// How the project line is rendered: "basename" (default) or "full".
+    #[serde(default = "default_project_path_mode")]
+    pub project_path_mode: String,
+    /// Base URL used to build clickable `{run_url}` links (e.g. `https://code.example.com`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_base_url: Option<String>,
+    #[serde(default)]
+    pub wecom: WecomNotification,
+    #[serde(default)]
+    pub http: HttpNotification,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            on_complete: true,
+            on_error: true,
+            on_permission: true,
+            language: default_notification_language(),
+            project_path_mode: default_project_path_mode(),
+            link_base_url: None,
+            wecom: WecomNotification::default(),
+            http: HttpNotification::default(),
+        }
+    }
+}
+
+/// WeCom (企业微信) group-robot webhook.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WecomNotification {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Full robot webhook URL, e.g.
+    /// `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx`.
+    #[serde(default)]
+    pub webhook_url: String,
+    /// Optional mobile numbers to @mention.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentioned_mobiles: Vec<String>,
+}
+
+/// Custom HTTP endpoint notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpNotification {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<NotificationHeader>,
+    /// Optional template. Placeholders: {event} {title} {status} {run_id}
+    /// {run_name} {cwd} {agent} {message} {run_url} {time}. Empty = built-in JSON body.
+    #[serde(default)]
+    pub body_template: String,
+}
+
+impl Default for HttpNotification {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            method: default_http_method(),
+            headers: Vec::new(),
+            body_template: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationHeader {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationTestResult {
+    pub ok: bool,
+    pub message: String,
 }
 
 fn default_auth_mode() -> String {
@@ -400,6 +515,7 @@ impl Default for UserSettings {
             web_server_allowed_origins: None,
             web_server_tunnel_url: None,
             claude_path: None,
+            notifications: NotificationSettings::default(),
             updated_at: now_iso(),
         }
     }

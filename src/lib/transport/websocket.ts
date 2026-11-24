@@ -38,72 +38,119 @@ export class WsTransport implements Transport {
   }
 
   private connect(): Promise<void> {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve();
     if (this.connectPromise) return this.connectPromise;
 
-    this.connectPromise = new Promise<void>((resolve, reject) => {
-      const url = this.buildWsUrl();
-      dbg("transport", "ws.connecting", { url });
-
-      const ws = new WebSocket(url);
-      this.ws = ws;
-
-      ws.onopen = () => {
-        dbg("transport", "ws.connected");
-        this.reconnectDelay = 1000;
-        this.connectPromise = null;
-        // Re-subscribe to all previously subscribed runs
-        this.resubscribeAll();
-        resolve();
-      };
-
-      ws.onmessage = (ev) => {
-        this.handleMessage(ev.data);
-      };
-
-      ws.onerror = (ev) => {
-        dbgWarn("transport", "ws.error", ev);
-      };
-
-      ws.onclose = (ev) => {
-        dbg("transport", "ws.closed", { code: ev.code, reason: ev.reason });
-        this.connectPromise = null;
-        this.ws = null;
-
-        // Reject all pending requests
-        for (const [id, req] of this.pending) {
-          req.reject(new Error(`WebSocket closed (code ${ev.code})`));
-          this.pending.delete(id);
-        }
-
-        if (ev.code === 4401) {
-          // Auth failure — stop reconnecting, redirect to login
-          dbgWarn("transport", "ws.authFailure, redirecting to /login");
-          this.shouldReconnect = false;
-          window.location.href = "/login";
-          return;
-        }
-
-        if (this.shouldReconnect) {
-          const delay = Math.min(this.reconnectDelay, 30000);
-          dbg("transport", "ws.reconnecting", { delay });
-          setTimeout(() => {
-            this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
-            this.ensureConnected();
-          }, delay);
-        }
-      };
-
-      // Timeout for initial connection
-      setTimeout(() => {
-        if (ws.readyState === WebSocket.CONNECTING) {
-          ws.close();
-          this.connectPromise = null;
-          reject(new Error("WebSocket connection timeout"));
-        }
-      }, 10000);
+    // The promise must settle on EVERY terminal outcome (open, error, close,
+    // timeout). Previously a refused connection only cleared `connectPromise`
+    // in `onclose`, leaving every `await ensureConnected()` pending forever —
+    // the whole UI stayed silently frozen even after the server came back.
+    let resolveFn!: () => void;
+    let rejectFn!: (error: Error) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
     });
 
-    return this.connectPromise;
+    // Clear the shared slot once settled so the next caller can retry.
+    const clearSlot = () => {
+      if (this.connectPromise === promise) this.connectPromise = null;
+    };
+    promise.then(clearSlot, clearSlot);
+    this.connectPromise = promise;
+
+    let settled = false;
+    const settle = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (error) rejectFn(error);
+      else resolveFn();
+    };
+
+    const url = this.buildWsUrl();
+    dbg("transport", "ws.connecting", { url });
+
+    const ws = new WebSocket(url);
+    this.ws = ws;
+
+    ws.onopen = () => {
+      dbg("transport", "ws.connected");
+      this.reconnectDelay = 1000;
+      // Re-subscribe to all previously subscribed runs
+      this.resubscribeAll();
+      settle();
+    };
+
+    ws.onmessage = (ev) => {
+      this.handleMessage(ev.data);
+    };
+
+    ws.onerror = (ev) => {
+      dbgWarn("transport", "ws.error", ev);
+      // `onclose` follows, but settle now so awaiting callers fail fast.
+      settle(new Error("WebSocket connection failed"));
+    };
+
+    ws.onclose = (ev) => {
+      dbg("transport", "ws.closed", { code: ev.code, reason: ev.reason });
+      // Only mutate shared connection state if this is still the active socket.
+      // A stale socket's close must not reject requests sent on its successor.
+      const isCurrent = this.ws === ws;
+      if (isCurrent) this.ws = null;
+
+      // Reject the in-flight connect promise if the socket closed pre-open.
+      // No-op after a successful `onopen` (already settled).
+      settle(
+        new Error(
+          ev.code === 4401
+            ? "WebSocket unauthorized (session expired)"
+            : `WebSocket closed (code ${ev.code})`,
+        ),
+      );
+      if (!isCurrent) return;
+
+      // Reject all pending requests
+      for (const [id, req] of this.pending) {
+        req.reject(new Error(`WebSocket closed (code ${ev.code})`));
+        this.pending.delete(id);
+      }
+
+      if (ev.code === 4401) {
+        // Auth failure — stop reconnecting, redirect to login
+        dbgWarn("transport", "ws.authFailure, redirecting to /login");
+        this.shouldReconnect = false;
+        window.location.href = "/login";
+        return;
+      }
+
+      if (this.shouldReconnect) {
+        const delay = Math.min(this.reconnectDelay, 30000);
+        dbg("transport", "ws.reconnecting", { delay });
+        setTimeout(() => {
+          this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+          // Reconnect attempts are fire-and-forget; swallow the rejection
+          // (the next invoke/listen will surface a real error if needed).
+          this.ensureConnected().catch((e) => {
+            dbgWarn("transport", "ws.reconnectFailed", e);
+          });
+        }, delay);
+      }
+    };
+
+    // Timeout for initial connection. If the handshake is still pending after
+    // 10s, close it and reject so callers don't hang.
+    const timeoutId = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        settle(new Error("WebSocket connection timeout"));
+        ws.close();
+      }
+    }, 10000);
+    promise.then(
+      () => clearTimeout(timeoutId),
+      () => clearTimeout(timeoutId),
+    );
+
+    return promise;
   }
 
   private async ensureConnected(): Promise<void> {

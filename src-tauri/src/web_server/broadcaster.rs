@@ -91,6 +91,10 @@ impl BroadcastEmitter {
                     seq,
                     event_type_name(event)
                 );
+                // Outbound notifications (WeCom / custom HTTP). Detached task;
+                // only fires for completion/failure/permission events and never
+                // blocks the agent loop.
+                crate::notifications::on_bus_event(run_id, event);
                 let payload = match serde_json::to_value(event) {
                     Ok(v) => v,
                     Err(e) => {

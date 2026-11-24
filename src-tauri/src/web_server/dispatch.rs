@@ -252,6 +252,19 @@ pub async fn dispatch_command(
             let result = crate::commands::settings::update_agent_settings(agent, patch)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "test_notification_channel" => {
+            let channel = extract_str(&params, "channel")?;
+            // Accept the UI's unsaved draft so "Test" works before "Save".
+            let settings: crate::models::NotificationSettings = match params.get("settings") {
+                Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("Invalid notification settings: {}", e))?,
+                _ => crate::storage::settings::get_user_settings().notifications,
+            };
+            let result =
+                crate::commands::notifications::test_notification_channel(channel, settings)
+                    .await?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
 
         // ── Files ──
         "agents_md_exists" => {

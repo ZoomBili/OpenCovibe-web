@@ -11,6 +11,8 @@ import type {
   RunArtifact,
   UserSettings,
   AgentSettings,
+  NotificationSettings,
+  NotificationTestResult,
   DirListing,
   Attachment,
   CliCheckResult,
@@ -233,6 +235,18 @@ export async function getUserSettings(): Promise<UserSettings> {
 export async function updateUserSettings(patch: Partial<UserSettings>): Promise<UserSettings> {
   dbg("api", "updateUserSettings");
   return invoke<UserSettings>("update_user_settings", { patch });
+}
+
+/**
+ * Send a test notification through one channel using the supplied (possibly
+ * unsaved) config. Bypasses the master switch so users can verify a webhook.
+ */
+export async function testNotificationChannel(
+  channel: "wecom" | "http",
+  settings: NotificationSettings,
+): Promise<NotificationTestResult> {
+  dbg("api", "testNotificationChannel", { channel });
+  return invoke<NotificationTestResult>("test_notification_channel", { channel, settings });
 }
 
 export async function getAgentSettings(agent: string): Promise<AgentSettings> {

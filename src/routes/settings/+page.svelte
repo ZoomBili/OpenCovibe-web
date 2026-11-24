@@ -17,6 +17,7 @@
   import Button from "$lib/components/Button.svelte";
   import Input from "$lib/components/Input.svelte";
   import KeybindingEditor from "$lib/components/KeybindingEditor.svelte";
+  import NotificationSettingsPanel from "$lib/components/NotificationSettingsPanel.svelte";
   import ProviderIcon from "$lib/components/ProviderIcon.svelte";
   import { formatKeyDisplay } from "$lib/stores/keybindings.svelte";
   import {
@@ -48,10 +49,18 @@
   import { getTransport } from "$lib/transport";
 
   // ── Tab state ──
-  type SettingsTab = "general" | "connection" | "cli-config" | "shortcuts" | "remote" | "debug";
+  type SettingsTab =
+    | "general"
+    | "connection"
+    | "notifications"
+    | "cli-config"
+    | "shortcuts"
+    | "remote"
+    | "debug";
   const VALID_TABS: SettingsTab[] = [
     "general",
     "connection",
+    "notifications",
     "cli-config",
     "shortcuts",
     "remote",
@@ -66,6 +75,7 @@
   const tabLabels: Record<SettingsTab, () => string> = {
     general: () => t("settings_tab_general"),
     connection: () => t("settings_tab_connection"),
+    notifications: () => t("settings_tab_notifications"),
     "cli-config": () => t("settings_tab_cliConfig"),
     shortcuts: () => t("settings_tab_shortcuts"),
     remote: () => t("settings_tab_remote"),
@@ -80,6 +90,10 @@
     {
       id: "connection",
       icon: "M12 2a4 4 0 0 0-4 4c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2 4 4 0 0 0-4-4z M8 8v2a4 4 0 0 0 8 0V8 M12 14v4 M8 18h8",
+    },
+    {
+      id: "notifications",
+      icon: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9 M10.3 21a1.94 1.94 0 0 0 3.4 0",
     },
     {
       id: "cli-config",
@@ -1744,6 +1758,15 @@
           {/if}
         </button>
       {/each}
+    </div>
+
+    <!-- Notifications: kept mounted so unsaved edits survive tab switches. -->
+    <div class:hidden={activeTab !== "notifications"}>
+      <NotificationSettingsPanel
+        onSaved={(next) => {
+          if (settings) settings = { ...settings, notifications: next };
+        }}
+      />
     </div>
 
     <!-- ═══ General tab ═══ -->

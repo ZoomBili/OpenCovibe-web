@@ -1,6 +1,7 @@
 <script lang="ts">
   import "../app.css";
   import { escapeHtml } from "$lib/utils/ansi";
+  import { APP_VERSION } from "$lib/version";
   import {
     listRuns,
     getUserSettings,
@@ -1476,7 +1477,7 @@
             <button
               class="text-xs text-muted-foreground hover:text-muted-foreground transition-colors cursor-pointer"
               onclick={() => (showAbout = true)}
-              title="About OpenCovibe">v0.1</button
+              title="About OpenCovibe">v{APP_VERSION}</button
             >
           </div>
           <div class="relative mx-auto mb-0.5">

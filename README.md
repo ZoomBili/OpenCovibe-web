@@ -6,6 +6,23 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 
 现在同时支持桌面和手机浏览器访问，手机端会自动切换为紧凑布局与抽屉式导航。
 
+## 261124更新：通知推送（v0.2.9）
+
+新增「设置 → 通知」标签页。任务完成、运行失败或等待审批时，可以把结果推送到手机：
+
+- **触发事件**：任务完成、运行失败、等待工具审批，三类可分别开关；总开关默认关闭，未启用时不会产生任何外发请求。只对实时事件生效，导入的 CLI 历史记录不会触发通知。
+- **企业微信**：填写群机器人 Webhook 即可发送文本消息，可选 @ 指定手机号；超过企业微信 2048 字节上限的消息会按 UTF-8 边界截断。
+- **自定义 HTTP**：支持 `GET` / `POST` / `PUT` / `PATCH`、自定义请求头和请求体模板，可对接 Bark、ntfy、自建网关等。模板支持 `{event}`、`{title}`、`{status}`、`{status_label}`、`{run_id}`、`{run_name}`、`{session}`、`{turn}`、`{turn_preview}`、`{project}`、`{cwd}`、`{agent}`、`{message}`、`{duration}`、`{tokens_m}`、`{run_url}`、`{time}`、`{text}`、`{text_body}` 占位符；JSON 模板里的占位符必须放在引号内（如 `"title": "{title}"`），保存或试发前会本地校验，避免把非法 JSON 发给端点。
+- **消息内容**：包含工程、会话、当前轮次与输入预览、状态、耗时和 token 用量；可设置通知语言（中 / 英）、项目名显示为目录名还是完整路径，以及用于生成 `{run_url}` 的会话链接根地址。
+- **试发**：每个通道都能在保存前用当前表单内容发送测试消息，无需先保存。
+- **可靠性**：通知在独立 tokio 任务中异步发送，超时 10 秒；发送失败只写日志，不会阻塞 Agent 会话或影响聊天。
+
+同时包含以下修复：
+
+- 侧栏版本号改为读取 `package.json`，与发布包 / FPK 版本保持一致（当前 `v0.2.9`）。
+- 修复 WebSocket 重连卡死：连接被拒绝时 `connect()` 的 Promise 不会结束，导致界面静默冻结；现在所有终止路径都会结束等待并按退避策略重连。
+- 修复插件市场清单 `lspServers` 字段大小写不一致导致解析不到的问题。
+
 ## 261124更新：移动端适配
 
 本次更新重点补齐手机 / 平板上的使用体验，桌面端行为保持不变：
@@ -21,9 +38,9 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
   - 过滤 `[claude-code:unrecognized_model]` 这类自定义网关模型的无害 stderr 提示，不再混淆聊天记录。
 
 ## 计划中的功能清单
-- 支持快速下拉配置（回车键 或 ctrl+回车）发送对话
-- 支持对话结束后发送企微消息、浏览器铃声
-- 飞牛应用
+- 支持对话结束后浏览器铃声 / 桌面通知
+- ~~支持对话结束后发送企微消息~~（v0.2.9 已支持，见上方通知推送）
+- ~~飞牛应用~~（已提供 FPK，见 `fnos/`）
 
 
 ## 一键安装
@@ -61,7 +78,7 @@ root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/in
       --workspace /vol1/1000/aicoding
 [OpenCovibe] Using existing Claude Code: /vol1/1000/nodejs24/npm-global/bin/claude
 [OpenCovibe] Using existing Codex: /vol1/1000/nodejs24/npm-global/bin/codex
-[OpenCovibe] Downloading OpenCovibe v0.2.7 for linux/amd64
+[OpenCovibe] Downloading OpenCovibe v0.2.9 for linux/amd64
   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
                                  Dload  Upload   Total   Spent    Left  Speed
   0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
@@ -70,9 +87,9 @@ root@zh:/# curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/in
                                  Dload  Upload   Total   Spent    Left  Speed
   0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
 100   110  100   110    0     0     22      0  0:00:05  0:00:04  0:00:01    32
-opencovibe-server_v0.2.7_linux_amd64.tar.gz: OK
+opencovibe-server_v0.2.9_linux_amd64.tar.gz: OK
 [OpenCovibe] Waiting for http://127.0.0.1:9476/health
-[OpenCovibe] Installed OpenCovibe v0.2.7
+[OpenCovibe] Installed OpenCovibe v0.2.9
 [OpenCovibe] URL: http://192.168.31.2:9476
 [OpenCovibe] Token: e17d0abcc1eb3769c0e12c813184b8f90013227ee058a753
 [OpenCovibe] Service user: root
@@ -99,7 +116,7 @@ systemctl restart opencovibe
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/install-server.sh" \
   | sudo env OPENCOVIBE_REPO="$REPO" bash -s -- \
-      --version v0.2.7 \
+      --version v0.2.9 \
       --workspace /vol1/1000/aicoding
 ```
 

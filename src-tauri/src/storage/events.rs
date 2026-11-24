@@ -2,7 +2,7 @@ use crate::models::{now_iso, BusEvent, ModelUsageSummary, RawRunUsage, RunEvent,
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 
 /// Event types the frontend reducer actually handles during replay.
 /// "raw" events (CLI stream data) are 90%+ of the file but the frontend drops them,
@@ -693,6 +693,49 @@ pub fn count_user_messages(run_id: &str) -> (u32, u32) {
     }
 
     (total, normal)
+}
+
+/// Last user turn for notifications: `(turn_number, user_text)`.
+///
+/// Turn number prefers the highest `usage_update.turn_index` (1-based, injected
+/// by the session actor), falling back to the number of `user_message` events.
+/// Returns `None` when the run has no user message yet.
+pub fn last_user_turn(run_id: &str) -> Option<(u32, String)> {
+    let path = events_path(run_id);
+    let file = fs::File::open(&path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut user_count: u32 = 0;
+    let mut max_turn: u32 = 0;
+    let mut last_text: Option<String> = None;
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        // Compat: wrapped `{"event": {...}}` and direct `{"type": ...}` formats.
+        let event = parsed.get("event").unwrap_or(&parsed);
+        match event.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            "user_message" => {
+                user_count += 1;
+                if let Some(text) = event.get("text").and_then(|v| v.as_str()) {
+                    last_text = Some(text.to_string());
+                }
+            }
+            "usage_update" => {
+                if let Some(idx) = event.get("turn_index").and_then(|v| v.as_u64()) {
+                    max_turn = max_turn.max(idx as u32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let text = last_text?;
+    Some((max_turn.max(user_count).max(1), text))
 }
 
 pub fn list_bus_events(run_id: &str, since_seq: Option<u64>) -> Vec<serde_json::Value> {
