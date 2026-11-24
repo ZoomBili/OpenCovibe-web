@@ -441,6 +441,14 @@ pub async fn fork_oneshot(
         for arg in &claude_args {
             local_cmd.arg(arg);
         }
+        // Same root escape hatch as spawn_cli_process: a forked session inherits the parent's
+        // permission mode (often bypass), and Claude Code refuses bypass under root unless the
+        // process believes it is sandboxed.
+        if crate::commands::session::is_root()
+            && settings.permission_mode.as_deref() == Some("bypassPermissions")
+        {
+            local_cmd.env("IS_SANDBOX", "1");
+        }
         let path_env = augmented_path();
         local_cmd
             .current_dir(cwd)

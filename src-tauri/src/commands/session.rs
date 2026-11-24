@@ -543,13 +543,11 @@ pub(crate) async fn start_session_impl(
         adapter_settings.permission_mode = Some(override_mode.clone());
     }
 
-    // 2a-2. Root/sudo workaround: Claude Code refuses to start with `--permission-mode
-    //     bypassPermissions` (which it equates to --dangerously-skip-permissions) when the
-    //     process runs as root/sudo — it errors on stderr before any session exists. Spawn in
-    //     a safe mode instead and raise to the intended mode via the control protocol once the
-    //     CLI reports session_init (that path applies live and is allowed under root). The actor
-    //     holds the first user turn until the override lands so the first message already runs
-    //     in the requested mode.
+    // 2a-2. Root/sudo workaround: Claude Code refuses `--permission-mode bypassPermissions`
+    //     when the CLI process runs as root/sudo — unless it believes it is sandboxed
+    //     (`IS_SANDBOX=1`). `spawn_cli_process` marks local bypass spawns accordingly, so the
+    //     requested mode is kept here. `dontAsk` still uses the safe spawn + deferred upgrade
+    //     for older CLIs; the actor no longer blocks the first turn on it.
     let pending_permission_override = if meta.agent == "claude" {
         let (spawn_mode, pending) =
             claude_spawn_permission(&adapter_settings.permission_mode, is_root());
@@ -1880,7 +1878,8 @@ pub(crate) fn codex_approval_for(perm: Option<&str>) -> String {
 /// Whether the server process runs with root privileges.
 ///
 /// Claude Code refuses to start with `--permission-mode bypassPermissions` (which it maps to
-/// `--dangerously-skip-permissions`) under root/sudo. Non-unix platforms never see this.
+/// `--dangerously-skip-permissions`) under root/sudo unless it believes it is sandboxed
+/// (`IS_SANDBOX=1` / `CLAUDE_CODE_BUBBLEWRAP`). Non-unix platforms never see this.
 #[cfg(unix)]
 pub(crate) fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
@@ -1895,10 +1894,9 @@ pub(crate) fn is_root() -> bool {
 ///
 /// Returns `(spawn_mode, pending_override)`:
 /// - Normal case: spawn with the requested mode, no deferred override.
-/// - root/sudo + `bypassPermissions`: **cannot be honored**. Claude Code refuses to launch with
-///   it and also refuses a live `set_permission_mode` to it unless the process was launched with
-///   `--dangerously-skip-permissions` (error_code `bypass_not_launched`). Deferring the switch
-///   would deadlock startup, so fall back to `auto` (supported under root) instead.
+/// - root/sudo + `bypassPermissions`: kept as-is. The CLI's root guard accepts bypass when
+///   `IS_SANDBOX=1` or `CLAUDE_CODE_BUBBLEWRAP` is set; `spawn_cli_process` passes the former for
+///   local bypass spawns, so no downgrade is needed.
 /// - root/sudo + `dontAsk`: current CLIs accept it at launch, but older ones rejected it. Keep the
 ///   safe spawn + deferred upgrade; the actor no longer blocks the first turn on it.
 pub(crate) fn claude_spawn_permission(
@@ -1908,18 +1906,9 @@ pub(crate) fn claude_spawn_permission(
     let Some(mode) = permission_mode.as_deref() else {
         return (None, None);
     };
-    if running_as_root {
-        match mode {
-            "bypassPermissions" => {
-                log::warn!(
-                    "[session] running as root: Claude Code does not support bypassPermissions; \
-                     falling back to permission mode auto"
-                );
-                (Some("auto".to_string()), None)
-            }
-            "dontAsk" => (Some("acceptEdits".to_string()), Some(mode.to_string())),
-            _ => (permission_mode.clone(), None),
-        }
+    if running_as_root && mode == "dontAsk" {
+        // Older CLIs rejected dontAsk at launch under root; spawn safe and upgrade live.
+        (Some("acceptEdits".to_string()), Some(mode.to_string()))
     } else {
         (permission_mode.clone(), None)
     }
@@ -2228,6 +2217,16 @@ async fn spawn_cli_process(
                 log::debug!("[session] setting extra env {}={}", k, v);
                 cmd.env(k, v);
             }
+        }
+
+        // Claude Code's startup guard only refuses bypassPermissions under root when the
+        // process does not believe it is sandboxed:
+        //   getuid()===0 && IS_SANDBOX!=="1" && !CLAUDE_CODE_BUBBLEWRAP
+        // fnOS runs this service as root, so mark bypass sessions accordingly. Without this,
+        // bypass is rejected before session_init and the app has to fall back to `auto`.
+        if is_root() && settings.permission_mode.as_deref() == Some("bypassPermissions") {
+            log::debug!("[session] root + bypassPermissions: setting IS_SANDBOX=1 for CLI");
+            cmd.env("IS_SANDBOX", "1");
         }
 
         cmd.hide_console().kill_on_drop(true).spawn().map_err(|e| {
@@ -3019,11 +3018,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_spawn_permission_falls_back_from_bypass_as_root() {
-        // Root + bypassPermissions → spawn "auto"; a deferred switch is impossible
-        // (Claude rejects it at launch and at runtime with bypass_not_launched).
+    fn claude_spawn_permission_keeps_bypass_as_root() {
+        // Root + bypassPermissions is kept: spawn_cli_process sets IS_SANDBOX=1 so the CLI's
+        // root guard accepts it (same escape hatch the CLI itself honors).
         let root_bypass = claude_spawn_permission(&Some("bypassPermissions".to_string()), true);
-        assert_eq!(root_bypass.0.as_deref(), Some("auto"));
+        assert_eq!(root_bypass.0.as_deref(), Some("bypassPermissions"));
         assert!(root_bypass.1.is_none());
 
         // dontAsk keeps the safe spawn + deferred upgrade.
