@@ -116,7 +116,7 @@
       {/if}
       {#if onRewind}
         <button
-          class="ml-auto p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered
+          class="ml-auto touch:opacity-100 p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered
             ? 'opacity-100'
             : 'opacity-0'}"
           onclick={onRewind}
@@ -140,7 +140,7 @@
       <button
         class="{onRewind
           ? ''
-          : 'ml-auto'} p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered ||
+          : 'ml-auto'} touch:opacity-100 p-1 rounded-md text-muted-foreground/50 hover:bg-muted hover:text-foreground transition-all duration-150 {hovered ||
         copied
           ? 'opacity-100'
           : 'opacity-0'}"
@@ -178,7 +178,7 @@
       </span>
     </div>
     <!-- Content: indented to align with text after icon -->
-    <div class="pl-7 text-sm text-foreground leading-relaxed">
+    <div class="text-sm leading-relaxed text-foreground max-sm:pl-0 sm:pl-7">
       {#if isUser}
         {#if attachments && attachments.length > 0}
           <div class="flex flex-wrap gap-2 mb-2">
@@ -187,7 +187,7 @@
                 <img
                   src="data:{att.type};base64,{att.contentBase64}"
                   alt={att.name}
-                  class="max-h-48 max-w-xs rounded-md border border-border object-contain"
+                  class="max-h-48 max-w-full rounded-md border border-border object-contain sm:max-w-xs"
                 />
               {:else}
                 <FileAttachment name={att.name} size={att.size} mimeType={att.type} />

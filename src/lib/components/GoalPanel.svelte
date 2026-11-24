@@ -125,7 +125,7 @@
 </script>
 
 <Modal bind:open title={t("codexGoal_title")}>
-  <div class="space-y-4 min-w-[440px] max-w-[560px]">
+  <div class="w-full space-y-4 sm:min-w-[440px] sm:max-w-[560px]">
     <!-- Objective -->
     <div class="space-y-1.5">
       <label class="text-xs font-medium text-muted-foreground" for="codex-goal-objective">

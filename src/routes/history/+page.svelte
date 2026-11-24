@@ -227,14 +227,14 @@
 
 <div class="flex h-full flex-col overflow-hidden">
   <!-- Header -->
-  <div class="shrink-0 border-b border-border px-6 py-4">
+  <div class="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
     <h1 class="text-xl font-semibold text-foreground">{t("history_title")}</h1>
     <p class="mt-1 text-sm text-muted-foreground">{t("history_subtitle")}</p>
   </div>
 
-  <div class="flex-1 overflow-y-auto px-6 py-4">
+  <div class="flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-4">
     <!-- Search + Filter toggle -->
-    <div class="mb-4 flex items-center gap-3">
+    <div class="mb-4 flex flex-wrap items-center gap-2 sm:gap-3">
       <div class="relative flex-1">
         <svg
           class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -285,7 +285,7 @@
     {#if showAdvancedFilters}
       <div class="mb-4 rounded-lg border border-border bg-muted/20 p-4">
         <!-- Row 1: Dropdowns + Date range -->
-        <div class="grid grid-cols-4 gap-3">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <!-- Project -->
           <div>
             <label class="mb-1.5 block text-xs font-medium text-muted-foreground"
@@ -366,7 +366,7 @@
         </div>
 
         <!-- Row 2: Cost range -->
-        <div class="mt-3 grid grid-cols-4 gap-3">
+        <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div>
             <label class="mb-1.5 block text-xs font-medium text-muted-foreground"
               >{t("history_costMin")}</label
@@ -445,7 +445,7 @@
     <!-- Summary bar (always visible once we have data; subtle opacity during reload) -->
     {#if response}
       <div
-        class="mb-3 flex items-center justify-between text-sm text-muted-foreground transition-opacity"
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground transition-opacity"
         class:opacity-50={loading}
       >
         <span>
@@ -505,9 +505,9 @@
         {#each response.results as run}
           <button
             onclick={() => goToRun(run.runId)}
-            class="w-full rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-muted/30"
+            class="w-full rounded-lg border border-border bg-card p-3 text-left transition-colors hover:bg-muted/30 sm:p-4"
           >
-            <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start justify-between gap-2 sm:gap-3">
               <!-- Left side -->
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">

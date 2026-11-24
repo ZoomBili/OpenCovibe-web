@@ -91,7 +91,7 @@
           {#if canJump && onScrollToTool && onPreview}
             <button
               type="button"
-              class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-muted-foreground/60 hover:text-foreground"
+              class="shrink-0 touch:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-muted-foreground/60 hover:text-foreground"
               onclick={() => onScrollToTool?.(entry.toolUseId!)}
               title={t("toolActivity_scrollToTool")}
               aria-label={t("toolActivity_scrollToTool")}

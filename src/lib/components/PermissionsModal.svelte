@@ -300,7 +300,7 @@
           >
             <code class="flex-1 text-xs break-all font-mono">{rule}</code>
             <button
-              class="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-colors hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+              class="shrink-0 rounded-md p-1 text-muted-foreground touch:opacity-100 opacity-0 transition-colors hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
               onclick={() => handleDelete(rule)}
               disabled={saving}
               title={t("permissions_deleteConfirm")}

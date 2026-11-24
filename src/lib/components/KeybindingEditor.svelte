@@ -208,7 +208,7 @@
     {:else if binding.editable}
       {#if isOverridden && onReset}
         <button
-          class="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors opacity-0 group-hover:opacity-100"
+          class="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors touch:opacity-100 opacity-0 group-hover:opacity-100"
           onclick={onReset}
           title={t("keybinding_resetDefault")}
         >
@@ -227,7 +227,7 @@
         </button>
       {/if}
       <button
-        class="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors opacity-0 group-hover:opacity-100"
+        class="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors touch:opacity-100 opacity-0 group-hover:opacity-100"
         onclick={startRecording}
         title={t("keybinding_editShortcut")}
       >

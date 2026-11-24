@@ -220,16 +220,26 @@
   let dropdownEl: HTMLDivElement | undefined = $state();
   let dropdownStyle = $state("");
 
+  /** Fixed-position the model dropdown under its trigger, clamped into the viewport so it
+   *  never runs off the right edge on narrow screens. */
+  function positionDropdown(): void {
+    if (!modelBtnEl) return;
+    const rect = modelBtnEl.getBoundingClientRect();
+    const margin = 8;
+    const width = Math.min(560, window.innerWidth - margin * 2);
+    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+    const spaceBelow = window.innerHeight - rect.bottom;
+    if (spaceBelow < 200) {
+      dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${left}px; max-width:${width}px; z-index:50;`;
+    } else {
+      dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${left}px; max-width:${width}px; z-index:50;`;
+    }
+  }
+
   function toggleModelDropdown() {
     dropdownOpen = !dropdownOpen;
     if (dropdownOpen && modelBtnEl) {
-      const rect = modelBtnEl.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
-      if (spaceBelow < 200) {
-        dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${rect.left}px; z-index:50;`;
-      } else {
-        dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${rect.left}px; z-index:50;`;
-      }
+      positionDropdown();
       focusedModelIdx = models.findIndex((m) => m.value === model);
       if (focusedModelIdx < 0) focusedModelIdx = 0;
       requestAnimationFrame(() => dropdownEl?.focus());
@@ -238,15 +248,7 @@
 
   export function openModelDropdown() {
     dropdownOpen = true;
-    if (modelBtnEl) {
-      const rect = modelBtnEl.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
-      if (spaceBelow < 200) {
-        dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${rect.left}px; z-index:50;`;
-      } else {
-        dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${rect.left}px; z-index:50;`;
-      }
-    }
+    positionDropdown();
     focusedModelIdx = models.findIndex((m) => m.value === model);
     if (focusedModelIdx < 0) focusedModelIdx = 0;
     requestAnimationFrame(() => dropdownEl?.focus());
@@ -377,17 +379,28 @@
 
 <div class="border-b border-border bg-muted/50 font-mono text-xs text-foreground/70">
   <!-- Tier 1: Always visible (h-9) -->
-  <div class="flex h-9 items-center justify-between px-3">
+  <div class="flex h-9 items-center justify-between gap-2 px-2 sm:px-3">
     <!-- Left: core info -->
     <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
       {#if onToggleSidebar}
         <button
-          class="rounded p-1 -ml-1 mr-0.5 hover:bg-accent transition-colors"
+          class="rounded p-1 -ml-1 mr-0.5 hover:bg-accent transition-colors max-sm:ml-0 max-sm:mr-0 max-sm:flex max-sm:h-8 max-sm:w-8 max-sm:items-center max-sm:justify-center"
           onclick={onToggleSidebar}
           title={t("statusbar_toggleSidebar")}
         >
+          <!-- Menu glyph on phones (opens the nav drawer), panel glyph on desktop -->
           <svg
-            class="h-3.5 w-3.5"
+            class="h-4 w-4 lg:hidden"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path d="M4 6h16M4 12h16M4 18h16" /></svg
+          >
+          <svg
+            class="hidden h-3.5 w-3.5 lg:block"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -436,7 +449,7 @@
           />
         {:else}
           <button
-            class="max-w-[200px] truncate text-foreground/80 hover:text-foreground transition-colors {run.name
+            class="max-w-[26vw] truncate text-foreground/80 hover:text-foreground transition-colors sm:max-w-[200px] {run.name
               ? 'font-medium'
               : 'italic text-foreground/40'}"
             onclick={startTitleEdit}
@@ -445,7 +458,7 @@
             {truncate(run.name || run.prompt, 30)}
           </button>
         {/if}
-        <span class="text-foreground/30">&middot;</span>
+        <span class="text-foreground/30 max-sm:hidden">&middot;</span>
       {/if}
 
       {#if !onStatusClick}
@@ -454,7 +467,7 @@
 
       {#if mode}
         <span
-          class="shrink-0 text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded {mode ===
+          class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider max-sm:hidden {mode ===
           'API'
             ? 'bg-violet-500/10 text-violet-400'
             : mode === 'Stream'
@@ -466,14 +479,14 @@
       {/if}
 
       {#if model}
-        <span class="text-foreground/30">&middot;</span>
+        <span class="text-foreground/30 max-sm:hidden">&middot;</span>
         {#if onModelChange}
           <button
             bind:this={modelBtnEl}
-            class="flex items-center gap-1 shrink-0 rounded border border-transparent px-1.5 py-0.5 -my-0.5 text-foreground/80 hover:text-foreground hover:bg-accent hover:border-border transition-colors"
+            class="flex max-w-[34vw] shrink-0 items-center gap-1 rounded border border-transparent px-1.5 py-0.5 -my-0.5 text-foreground/80 hover:text-foreground hover:bg-accent hover:border-border transition-colors sm:max-w-none"
             onclick={toggleModelDropdown}
           >
-            {modelLabel}
+            <span class="truncate">{modelLabel}</span>
             {#if !effortDisabled && effort}
               <span class="text-foreground/60 text-[10px]">{effort}</span>
             {/if}
@@ -549,10 +562,10 @@
     </div>
 
     <!-- Right: actions + chevron -->
-    <div class="flex items-center gap-2">
+    <div class="flex shrink-0 items-center gap-1 sm:gap-2">
       {#if onExportHtml}
         <button
-          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors max-sm:px-1.5"
           onclick={onExportHtml}
           title={t("export_htmlButton")}
           data-export-exclude
@@ -569,12 +582,12 @@
               points="16 6 12 2 8 6"
             /><line x1="12" x2="12" y1="2" y2="15" /></svg
           >
-          Export
+          <span class="max-sm:hidden">Export</span>
         </button>
       {/if}
       {#if onPreviewToggle}
         <button
-          class="flex items-center gap-1 rounded px-2 py-0.5 transition-colors
+          class="flex items-center gap-1 rounded px-2 py-0.5 transition-colors max-sm:px-1.5
             {previewOpen
             ? 'text-primary hover:bg-primary/10'
             : 'text-foreground/50 hover:text-foreground hover:bg-accent'}"
@@ -591,12 +604,12 @@
             stroke-linejoin="round"
             ><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg
           >
-          Preview
+          <span class="max-sm:hidden">Preview</span>
         </button>
       {/if}
       {#if !running && onRewind && persistedFiles && persistedFiles.length > 0}
         <button
-          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors max-sm:px-1.5"
           onclick={onRewind}
           title={t("statusbar_rewindTitle")}
         >
@@ -612,12 +625,12 @@
               d="M3 3v5h5"
             /></svg
           >
-          {t("statusbar_rewind")}
+          <span class="max-sm:hidden">{t("statusbar_rewind")}</span>
         </button>
       {/if}
       {#if onCodexRewind}
         <button
-          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors max-sm:px-1.5"
           onclick={onCodexRewind}
           title={t("codexRewind_buttonTitle")}
         >
@@ -633,12 +646,12 @@
               d="M3 3v5h5"
             /></svg
           >
-          {t("statusbar_rewind")}
+          <span class="max-sm:hidden">{t("statusbar_rewind")}</span>
         </button>
       {/if}
       {#if onFork && run?.session_id}
         <button
-          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+          class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors max-sm:px-1.5"
           onclick={onFork}
           title={t("statusbar_forkTitle")}
         >
@@ -656,7 +669,7 @@
               r="3"
             /><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9" /><path d="M12 12v3" /></svg
           >
-          {t("statusbar_fork")}
+          <span class="max-sm:hidden">{t("statusbar_fork")}</span>
         </button>
       {/if}
       {#if running && onEndSession}
@@ -685,12 +698,44 @@
 
       {#if toolsCount && toolsCount > 0 && onToolsClick}
         <button
-          class="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          class="text-xs text-muted-foreground hover:text-foreground transition-colors max-lg:hidden"
           onclick={onToolsClick}
           title={t("statusbar_showTools")}
         >
           {t("statusbar_tools", { count: String(toolsCount) })}
         </button>
+      {/if}
+
+      <!-- Phones: replace the old sidebar handle with the live context-usage percentage
+           (same number as the Info panel). Tapping it opens that panel. -->
+      {#if contextWindow && contextWindow > 0 && contextUtilization != null}
+        {@const ctxPct = Math.round(contextUtilization * 100)}
+        {@const ctxTextColor =
+          contextWarningLevel === "critical" || contextWarningLevel === "high"
+            ? "text-orange-500"
+            : contextWarningLevel === "moderate"
+              ? "text-amber-500"
+              : "text-foreground/60"}
+        {@const ctxTitle = t("statusbar_contextTitle", {
+          pct: String(ctxPct),
+          tokens: fmtNumber(contextWindow),
+        })}
+        {#if onStatusClick}
+          <button
+            class="rounded px-1.5 py-1 text-[11px] font-medium tabular-nums transition-colors hover:bg-accent {ctxTextColor} lg:hidden"
+            onclick={onStatusClick}
+            title={ctxTitle}
+          >
+            {ctxPct}%
+          </button>
+        {:else}
+          <span
+            class="px-1.5 py-1 text-[11px] font-medium tabular-nums {ctxTextColor} lg:hidden"
+            title={ctxTitle}
+          >
+            {ctxPct}%
+          </span>
+        {/if}
       {/if}
 
       <!-- Expand/collapse chevron -->
@@ -716,7 +761,9 @@
 
   <!-- Tier 2: Collapsible details (h-7) -->
   {#if expanded}
-    <div class="flex h-7 items-center justify-between px-3 border-t border-border/50">
+    <div
+      class="flex min-h-7 items-center justify-between gap-2 border-t border-border/50 px-2 py-1 max-sm:flex-wrap sm:px-3"
+    >
       <!-- Left: details -->
       <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
         {#if cwdShort}
@@ -724,7 +771,9 @@
         {/if}
 
         {#if sessionIdShort}
-          <span class="text-foreground/30">&middot;</span>
+          {#if cwdShort}
+            <span class="text-foreground/30">&middot;</span>
+          {/if}
           <button
             class="text-foreground/40 hover:text-foreground/70 transition-colors"
             title="{t('statusbar_sessionLabel', {
@@ -888,7 +937,7 @@
     bind:this={dropdownEl}
     tabindex="-1"
     role="listbox"
-    class="min-w-[560px] w-max rounded-md border bg-background shadow-lg animate-fade-in outline-none"
+    class="w-max min-w-[min(560px,calc(100vw-1rem))] rounded-md border bg-background shadow-lg animate-fade-in outline-none"
     style={dropdownStyle}
     onkeydown={handleDropdownKeydown}
   >

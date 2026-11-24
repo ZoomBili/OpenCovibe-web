@@ -135,7 +135,7 @@
               <span class="text-muted-foreground/40">({table.rows.length})</span>
             </button>
             {#if expandedSections.has(table.title)}
-              <div class="ml-4 mt-0.5">
+              <div class="ml-4 mt-0.5 max-w-full overflow-x-auto">
                 <table class="text-[11px] text-muted-foreground/70">
                   <thead>
                     <tr>

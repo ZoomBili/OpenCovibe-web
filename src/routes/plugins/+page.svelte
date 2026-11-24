@@ -935,7 +935,7 @@
   </div>
 {/if}
 
-<div class="px-6 py-5 h-full overflow-y-auto">
+<div class="h-full overflow-y-auto px-3 py-4 sm:px-6 sm:py-5">
   {#if loading}
     <div class="flex items-center justify-center py-16">
       <div
@@ -1235,9 +1235,12 @@
               </div>
             {:else}
               <!-- Side-by-side: skill list (left) + preview (right) -->
-              <div class="flex gap-3" style="height: calc(100vh - 320px); min-height: 300px;">
+              <div
+                class="flex gap-3 max-lg:flex-col"
+                style="height: calc(100dvh - 320px); min-height: 300px;"
+              >
                 <!-- Left: scrollable skill list -->
-                <div class="w-[280px] shrink-0 overflow-y-auto space-y-1.5 pr-1">
+                <div class="w-[280px] shrink-0 space-y-1.5 overflow-y-auto pr-1 max-lg:h-1/2 max-lg:w-full">
                   {#each communityDisplayResults as skill}
                     {@const isInstalled = (
                       installedSlugsByScope[communityScope] ?? new Set<string>()
@@ -1446,9 +1449,12 @@
             </button>
           </div>
         {:else}
-          <div class="flex gap-3" style="height: calc(100vh - 320px); min-height: 300px;">
+          <div
+            class="flex gap-3 max-lg:flex-col"
+            style="height: calc(100dvh - 320px); min-height: 300px;"
+          >
             <!-- Left: scrollable skill list -->
-            <div class="w-[280px] shrink-0 overflow-y-auto space-y-1.5 pr-1">
+            <div class="w-[280px] shrink-0 space-y-1.5 overflow-y-auto pr-1 max-lg:h-1/2 max-lg:w-full">
               {#each skills as skill}
                 <div
                   class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {skill.enabled ===

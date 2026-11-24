@@ -77,6 +77,7 @@
   import ReleaseNotesCard from "$lib/components/ReleaseNotesCard.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import { viewport } from "$lib/utils/viewport.svelte";
   import { yieldToMain } from "$lib/utils/yield";
   import {
     getLastTarget,
@@ -143,6 +144,28 @@
   let xtermRef: XTerminal | undefined = $state();
   let promptRef: PromptInput | undefined = $state();
   let sidebarCollapsed = $state(false);
+
+  // Mobile (< lg): the tool-activity sidebar becomes an overlay drawer. `sidebarCollapsed`
+  // keeps its meaning ("panel hidden"), so on phones we start collapsed and let the status
+  // bar / backdrop toggle it. On the way back to desktop the pre-mobile state is restored.
+  let collapsedBeforeMobile = false;
+  let wasMobileViewport: boolean | null = null;
+  $effect(() => {
+    const mobile = viewport.mobile;
+    if (wasMobileViewport === null) {
+      wasMobileViewport = mobile;
+      if (mobile) sidebarCollapsed = true;
+      return;
+    }
+    if (mobile === wasMobileViewport) return;
+    if (mobile) {
+      collapsedBeforeMobile = sidebarCollapsed;
+      sidebarCollapsed = true;
+    } else {
+      sidebarCollapsed = collapsedBeforeMobile;
+    }
+    wasMobileViewport = mobile;
+  });
   /** Reactive cwd override for new-chat-in-folder (cleared when a run is loaded) */
   let folderCwdOverride = $state("");
   let chatAreaRef: HTMLDivElement | undefined = $state();
@@ -739,6 +762,9 @@
       !!channelLatest &&
       cliVersionInfo.installed !== channelLatest,
   );
+  // Hides the separator before {@render heroMetaItems()} when it would render nothing
+  // (otherwise the hero footer ends with a dangling "·").
+  let heroMetaHasItems = $derived(!!heroCliVersion || remoteHosts.length > 0);
 
   // ── Platform display name ──
   let platformDisplayName = $derived.by(() => {
@@ -807,8 +833,9 @@
   $effect(() => {
     const _ = store.run?.id;
     toolFilter = null;
-    // Auto-focus the prompt input when entering a session
-    requestAnimationFrame(() => promptRef?.focus());
+    // Auto-focus the prompt input when entering a session. Phones skip it: focusing on open
+    // pops the soft keyboard and shrinks the conversation before the user has read anything.
+    if (!viewport.mobile) requestAnimationFrame(() => promptRef?.focus());
   });
 
   // Sync verbose state from CLI config when run changes (or on retry)
@@ -4432,7 +4459,9 @@
 {/snippet}
 
 {#snippet heroMetaFooter()}
-  <div class="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+  <div
+    class="mt-4 flex flex-wrap items-center justify-center gap-1.5 px-2 text-xs text-muted-foreground"
+  >
     {@render heroMetaItems()}
   </div>
 {/snippet}
@@ -4539,7 +4568,7 @@
       activeTaskCount={store.activeBackgroundTasks.length}
       mode={store.run ? (store.useStreamSession ? "Stream" : "CLI") : ""}
       toolsCount={sidebarCollapsed ? sidebarToolsCount : 0}
-      onToolsClick={sidebarCollapsed ? toggleSidebar : undefined}
+      onToolsClick={hasSidebarData && sidebarCollapsed ? toggleSidebar : undefined}
       remoteHostName={store.remoteHostName}
       onRename={store.run ? handleRename : undefined}
       authSourceLabel={store.authSourceLabel}
@@ -4781,7 +4810,7 @@
                 </div>
                 <!-- Footer outside animate-slide-up: AuthSourceBadge needs transform-free ancestor for fixed dropdown -->
                 <div
-                  class="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
+                  class="mt-4 flex flex-wrap items-center justify-center gap-1.5 px-2 text-xs text-muted-foreground"
                 >
                   <!-- Agent switcher in the hero, synced with the composer's AgentSelector
                        (both call handleAgentChange → store.agent). Switching here also swaps the
@@ -4799,7 +4828,9 @@
                     hasRun={false}
                     variant="hero"
                   />
-                  <span class="text-muted-foreground">·</span>
+                  {#if heroMetaHasItems}
+                    <span class="text-muted-foreground">·</span>
+                  {/if}
                   {@render heroMetaItems()}
                 </div>
               </div>
@@ -5747,25 +5778,44 @@
 
   <!-- Tool Activity sidebar -->
   {#if hasSidebarData}
-    <ToolActivity
-      timeline={store.timeline}
-      tools={store.tools}
-      turnUsages={store.turnUsages}
-      {contextHistory}
-      persistedFiles={store.persistedFiles}
-      sessionInfo={currentSessionInfo}
-      collapsed={sidebarCollapsed}
-      onToggle={toggleSidebar}
-      onScrollToTool={scrollToTool}
-      onScrollToTurn={(anchorId) => scrollToMessage(anchorId)}
-      bind:requestedTab={sidebarRequestedTab}
-      backgroundTasks={store.taskNotifications}
-      activeBackgroundTasks={store.activeBackgroundTasks}
-      cwd={store.effectiveCwd}
-      runId={store.run?.id ?? ""}
-      isRemote={store.isRemote}
-      bind:requestedPreviewPath
-    />
+    <!-- Phones: the panel floats over the chat behind a tappable scrim. -->
+    {#if viewport.mobile && !sidebarCollapsed}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="fixed inset-0 z-30 bg-black/50 backdrop-blur-[1px] animate-fade-in"
+        onclick={() => (sidebarCollapsed = true)}
+        onkeydown={(e) => e.key === "Escape" && (sidebarCollapsed = true)}
+      ></div>
+    {/if}
+    <!-- Desktop: inline column. Phones: slide-in drawer (translated off-screen while closed,
+         but never unmounted so CodeMirror/files state survives). -->
+    <div
+      class="shrink-0 max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:w-[min(92vw,440px)] max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200 pt-safe pb-safe
+        {viewport.mobile && sidebarCollapsed
+        ? 'max-lg:translate-x-full max-lg:pointer-events-none'
+        : 'max-lg:translate-x-0'}"
+      aria-hidden={viewport.mobile && sidebarCollapsed}
+    >
+      <ToolActivity
+        timeline={store.timeline}
+        tools={store.tools}
+        turnUsages={store.turnUsages}
+        {contextHistory}
+        persistedFiles={store.persistedFiles}
+        sessionInfo={currentSessionInfo}
+        collapsed={viewport.mobile ? false : sidebarCollapsed}
+        onToggle={toggleSidebar}
+        onScrollToTool={scrollToTool}
+        onScrollToTurn={(anchorId) => scrollToMessage(anchorId)}
+        bind:requestedTab={sidebarRequestedTab}
+        backgroundTasks={store.taskNotifications}
+        activeBackgroundTasks={store.activeBackgroundTasks}
+        cwd={store.effectiveCwd}
+        runId={store.run?.id ?? ""}
+        isRemote={store.isRemote}
+        bind:requestedPreviewPath
+      />
+    </div>
   {/if}
 
   <RewindModal

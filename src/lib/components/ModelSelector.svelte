@@ -39,10 +39,15 @@
     if (!buttonEl) return;
     const rect = buttonEl.getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom;
+    // Clamp into the viewport: the menu is 320px wide, which overflows a phone
+    // when the trigger sits near the right edge.
+    const margin = 8;
+    const width = Math.min(320, window.innerWidth - margin * 2);
+    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
     if (spaceBelow < 260) {
-      dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${rect.left}px; z-index:50;`;
+      dropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${left}px; max-width:${width}px; z-index:50;`;
     } else {
-      dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${rect.left}px; z-index:50;`;
+      dropdownStyle = `position:fixed; top:${rect.bottom + 4}px; left:${left}px; max-width:${width}px; z-index:50;`;
     }
   }
 
@@ -114,7 +119,7 @@
 
   {#if dropdownOpen}
     <div
-      class="w-80 rounded-md border bg-background shadow-lg animate-fade-in"
+      class="max-h-[min(24rem,60dvh)] w-80 overflow-y-auto rounded-md border bg-background shadow-lg animate-fade-in"
       style={dropdownStyle}
     >
       <div class="p-1">

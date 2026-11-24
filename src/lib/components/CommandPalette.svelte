@@ -237,7 +237,7 @@
 
 {#if open}
   <div
-    class="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"
+    class="fixed inset-0 z-50 flex items-start justify-center px-2 pt-[12vh] sm:px-0 sm:pt-[20vh]"
     role="dialog"
     aria-modal="true"
   >
@@ -251,7 +251,7 @@
 
     <!-- Palette -->
     <div
-      class="relative z-50 w-full max-w-xl rounded-lg border bg-background shadow-2xl animate-fade-in"
+      class="relative z-50 max-h-[76dvh] w-full max-w-xl overflow-hidden rounded-lg border bg-background shadow-2xl animate-fade-in"
     >
       <!-- Search -->
       <div class="flex items-center gap-2 border-b px-4 py-3">
@@ -323,7 +323,7 @@
 <!-- Result modal -->
 {#if resultModalOpen}
   <div
-    class="fixed inset-0 z-[60] flex items-center justify-center"
+    class="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-6"
     role="dialog"
     aria-modal="true"
     tabindex="-1"
@@ -338,7 +338,7 @@
       onkeydown={(e) => e.key === "Escape" && (resultModalOpen = false)}
     ></div>
     <div
-      class="relative z-[60] w-full max-w-lg rounded-lg border bg-background p-6 shadow-lg animate-fade-in"
+      class="relative z-[60] max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-lg border bg-background p-4 shadow-lg animate-fade-in sm:p-6"
     >
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold">{resultModalTitle}</h2>

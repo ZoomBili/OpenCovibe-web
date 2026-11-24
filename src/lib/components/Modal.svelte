@@ -39,7 +39,7 @@
 
 {#if open}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center"
+    class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6"
     role="dialog"
     aria-modal="true"
     tabindex="-1"
@@ -53,10 +53,12 @@
       role="presentation"
     ></div>
 
-    <!-- Content -->
-    <div class="relative z-50 w-full max-w-lg rounded-lg border bg-background p-6 shadow-lg">
+    <!-- Content: on phones this is a near-full-screen sheet so long forms stay usable. -->
+    <div
+      class="relative z-50 max-h-[calc(100dvh-1.5rem)] w-full overflow-y-auto rounded-xl border bg-background p-4 shadow-lg sm:max-h-[85dvh] sm:max-w-lg sm:rounded-lg sm:p-6"
+    >
       {#if title}
-        <h2 class="mb-4 text-lg font-semibold">{title}</h2>
+        <h2 class="mb-4 text-base font-semibold sm:text-lg">{title}</h2>
       {/if}
       {#if children}
         {@render children()}

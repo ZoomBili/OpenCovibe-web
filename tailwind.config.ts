@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import plugin from "tailwindcss/plugin";
 import typography from "@tailwindcss/typography";
 
 export default {
@@ -54,5 +55,13 @@ export default {
       },
     },
   },
-  plugins: [typography],
+  plugins: [
+    typography,
+    // `touch:` / `mouse:` variants — touch devices have no hover state, so actions that are
+    // revealed on hover (copy buttons, row actions) must be visible by default on them.
+    plugin(({ addVariant }) => {
+      addVariant("touch", "@media (pointer: coarse)");
+      addVariant("mouse", "@media (hover: hover) and (pointer: fine)");
+    }),
+  ],
 } satisfies Config;

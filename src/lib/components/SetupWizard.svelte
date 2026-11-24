@@ -251,8 +251,10 @@
   let accountDisplayName = $derived(targetAgent === "codex" ? "ChatGPT" : "Anthropic");
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-background">
-  <div class="w-full max-w-xl mx-auto px-6">
+<div
+  class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background p-4 sm:items-center sm:p-6"
+>
+  <div class="mx-auto w-full max-w-xl px-0 sm:px-6">
     {#if step === "agent_choice"}
       <!-- Agent choice step — user picks which CLI to set up -->
       <div class="flex flex-col gap-6">
@@ -307,7 +309,7 @@
             {#each availableMethods as method, i}
               <div class="rounded-lg border border-border p-3 bg-muted/30">
                 <div class="flex items-center gap-3">
-                  <code class="flex-1 text-sm font-mono text-foreground/90 select-all"
+                  <code class="min-w-0 flex-1 select-all break-all text-sm font-mono text-foreground/90"
                     >$ {method.command}</code
                   >
                   {#if i === 0}
@@ -400,8 +402,8 @@
 
         <div
           class={targetAgent === "codex"
-            ? "grid grid-cols-1 gap-4 max-w-sm mx-auto"
-            : "grid grid-cols-2 gap-4"}
+            ? "mx-auto grid max-w-sm grid-cols-1 gap-4"
+            : "grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4"}
         >
           <!-- OAuth -->
           <button
@@ -512,7 +514,7 @@
 
         {#if !selectedPlatform}
           <!-- Platform grid -->
-          <div class="flex flex-col gap-4 max-h-[60vh] overflow-y-auto pr-1">
+          <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
             {#each PRESET_CATEGORIES as category}
               {@const presets = PLATFORM_PRESETS.filter((p) => p.category === category.id)}
               {#if presets.length > 0}
@@ -522,7 +524,7 @@
                   >
                     {category.label}
                   </p>
-                  <div class="grid grid-cols-3 gap-2">
+                  <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     {#each presets as preset}
                       <button
                         class="flex flex-col gap-0.5 rounded-lg border border-border p-3 text-left transition-colors hover:border-primary/50 hover:bg-accent/50"

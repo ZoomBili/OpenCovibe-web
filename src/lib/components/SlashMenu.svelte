@@ -121,7 +121,7 @@
 
 <div
   bind:this={menuEl}
-  class="fixed z-50 rounded-lg border border-border bg-background shadow-lg animate-fade-in"
+  class="fixed z-50 max-h-[min(60dvh,30rem)] overflow-y-auto rounded-lg border border-border bg-background shadow-lg animate-fade-in"
   style="bottom: {bottom}px; left: {left}px; width: {width}px;"
 >
   {#if phase === "commands"}

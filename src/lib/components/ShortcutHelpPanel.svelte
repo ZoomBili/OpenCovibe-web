@@ -46,7 +46,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm animate-fade-in sm:p-6"
     onclick={() => (open = false)}
   >
     <!-- Panel -->
@@ -55,7 +55,7 @@
       tabindex="-1"
       role="dialog"
       aria-modal="true"
-      class="w-full max-w-md rounded-xl border border-border bg-background shadow-2xl outline-none animate-slide-up"
+      class="w-full max-w-md overflow-hidden rounded-xl border border-border bg-background shadow-2xl outline-none animate-slide-up"
       onclick={(e) => e.stopPropagation()}
     >
       <!-- Header -->

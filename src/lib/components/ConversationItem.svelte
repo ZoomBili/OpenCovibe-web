@@ -165,7 +165,7 @@
       {/if}
       {#if canResume && onresume}
         <button
-          class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent transition-opacity"
+          class="touch:opacity-100 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent transition-opacity"
           onclick={(e) => {
             e.stopPropagation();
             onresume(run.id, "resume");
@@ -188,7 +188,7 @@
       {/if}
       {#if canDelete && ondelete}
         <button
-          class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-opacity"
+          class="touch:opacity-100 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-opacity"
           onclick={(e) => {
             e.stopPropagation();
             ondelete(conversation);

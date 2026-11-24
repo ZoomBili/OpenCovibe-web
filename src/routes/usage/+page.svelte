@@ -229,9 +229,9 @@
   });
 </script>
 
-<div class="max-w-4xl mx-auto p-6 space-y-6 animate-slide-up">
+<div class="mx-auto max-w-4xl space-y-4 p-3 animate-slide-up sm:space-y-6 sm:p-6">
   <!-- Header -->
-  <div class="flex items-center gap-4">
+  <div class="flex items-center gap-3 sm:gap-4">
     <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10">
       <svg
         class="h-7 w-7 text-emerald-600 dark:text-emerald-400"
@@ -250,7 +250,7 @@
   </div>
 
   <!-- Scope tabs: App / Global -->
-  <div class="flex items-center gap-4">
+  <div class="flex flex-wrap items-center gap-2 sm:gap-4">
     <div class="flex gap-1 bg-muted/40 rounded-lg p-0.5">
       <button
         class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors
@@ -337,7 +337,7 @@
     </div>
   {:else if data}
     <!-- Summary cards -->
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+    <div class="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
       <Card class="p-4 text-center">
         <p class="text-2xl font-bold">{formatCost(data.totalCostUsd)}</p>
         <p class="text-xs text-muted-foreground mt-1">{t("usage_totalCost")}</p>
@@ -373,7 +373,7 @@
 
     <!-- Activity Heatmap (always 52 weeks, independent of date filter) -->
     {#if heatmapDaily}
-      <Card class="p-6 space-y-3">
+      <Card class="space-y-3 p-4 sm:p-6">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             {t("usage_activityHeatmap")}
@@ -392,7 +392,7 @@
     {/if}
 
     <!-- Daily trend chart -->
-    <Card class="p-6 space-y-4">
+    <Card class="space-y-4 p-4 sm:p-6">
       <div class="flex items-center justify-between">
         <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
           {t("usage_dailyTrend")}
@@ -496,13 +496,13 @@
     </Card>
 
     <!-- By Model -->
-    <Card class="p-6 space-y-4">
+    <Card class="space-y-4 p-4 sm:p-6">
       <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
         {t("usage_byModel")}
       </h2>
       {#if data.byModel.length > 0}
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[560px] text-sm">
             <thead>
               <tr class="text-xs text-muted-foreground border-b border-border">
                 <th class="text-left py-2 font-medium">{t("usage_thModel")}</th>
@@ -566,13 +566,13 @@
 
     <!-- Run History (App mode only) -->
     {#if scope === "app"}
-      <Card class="p-6 space-y-4">
+      <Card class="space-y-4 p-4 sm:p-6">
         <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
           {t("usage_runHistory")}
         </h2>
         {#if sortedRuns.length > 0}
           <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+            <table class="w-full min-w-[560px] text-sm">
               <thead>
                 <tr class="text-xs text-muted-foreground border-b border-border">
                   <th

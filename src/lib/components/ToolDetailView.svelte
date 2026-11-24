@@ -649,7 +649,7 @@
           ></span>
         {/if}
         <button
-          class="absolute top-1.5 right-1.5 text-xs text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
+          class="absolute top-1.5 right-1.5 text-xs text-muted-foreground hover:text-foreground touch:opacity-100 opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(`$ ${tool.input?.command}\n${terminalPlainText}`)}
           >{copyFeedback ?? t("common_copy")}</button
         >
@@ -928,7 +928,7 @@
         {/if}
         {@render truncateOverlay(truncated)}
         <button
-          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
+          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground touch:opacity-100 opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(content)}>{copyFeedback ?? t("common_copy")}</button
         >
       </div>
@@ -985,7 +985,7 @@
         <pre
           class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{outputText}</pre>
         <button
-          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
+          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground touch:opacity-100 opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(outputText)}>{copyFeedback ?? t("common_copy")}</button
         >
         {@render truncateOverlay(needsExpand)}
@@ -1499,7 +1499,7 @@
             "json",
           )}</pre>
         <button
-          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
+          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground touch:opacity-100 opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(JSON.stringify(tool.input, null, 2))}
           >{copyFeedback ?? t("common_copy")}</button
         >
@@ -1517,7 +1517,7 @@
         <pre
           class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{outputText}</pre>
         <button
-          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
+          class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground touch:opacity-100 opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(outputText)}>{copyFeedback ?? t("common_copy")}</button
         >
         {@render truncateOverlay(needsExpand)}

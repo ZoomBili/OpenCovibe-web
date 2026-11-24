@@ -48,7 +48,7 @@
 
 <div class="flex h-full flex-col bg-background">
   <!-- Header -->
-  <div class="flex h-14 shrink-0 items-center gap-3 border-b border-border px-6">
+  <div class="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:gap-3 sm:px-6">
     <button
       class="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
       onclick={() => history.back()}
@@ -141,7 +141,7 @@
         ></div>
       </div>
     {:else if error}
-      <div class="flex flex-col items-center gap-3 px-6 py-20 text-center">
+      <div class="flex flex-col items-center gap-3 px-4 py-16 text-center sm:px-6 sm:py-20">
         <svg
           class="h-8 w-8 text-destructive/50"
           viewBox="0 0 24 24"
@@ -187,7 +187,7 @@
         {/if}
       </div>
     {:else}
-      <div class="mx-auto max-w-3xl px-6 py-6 space-y-1">
+      <div class="mx-auto max-w-3xl space-y-1 px-3 py-4 sm:px-6 sm:py-6">
         {#each filteredEntries as entry}
           {@const isCurrent = currentVersion && entry.version === currentVersion}
           <div

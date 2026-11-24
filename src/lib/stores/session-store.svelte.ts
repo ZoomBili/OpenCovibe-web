@@ -3086,9 +3086,26 @@ export class SessionStore {
             cliValue: normalizedPermMode,
             userValue: this.permissionMode,
           });
-          // CLI may have reset permission mode after compaction — re-send to resync.
-          // Only in live mode (not batch replay) and when the run has a valid id.
-          if (!ctx && this.run?.id && normalizedPermMode !== this.permissionMode) {
+          // Root fallback: Claude Code cannot run bypassPermissions as root, so the backend
+          // launches with "auto" instead. On the FIRST init only, adopt the CLI's mode so the
+          // selector reflects what is actually running (do not rely on later inits — those can
+          // be compaction resets that the resync path below corrects).
+          if (
+            !ctx &&
+            !this.sessionInitReceived &&
+            this.permissionMode === "bypassPermissions" &&
+            normalizedPermMode !== "bypassPermissions"
+          ) {
+            dbgWarn(
+              "store",
+              "session_init: bypass unavailable (root), adopting CLI permission mode",
+              { cliValue: normalizedPermMode },
+            );
+            this.permissionMode = normalizedPermMode;
+            this.permissionModeSetByUser = false;
+          } else if (!ctx && this.run?.id && normalizedPermMode !== this.permissionMode) {
+            // CLI may have reset permission mode after compaction — re-send to resync.
+            // Only in live mode (not batch replay) and when the run has a valid id.
             dbg("store", "resync permissionMode to CLI after compaction", {
               mode: this.permissionMode,
             });
@@ -4031,6 +4048,15 @@ export class SessionStore {
 
       case "raw": {
         const rawText = typeof ev.data === "string" ? ev.data : JSON.stringify(ev.data);
+        // Claude Code's SDK emits this diagnostic for custom gateway model ids (e.g.
+        // "opencode-go/..."). Requests still succeed; hide it live and from replayed history.
+        if (
+          ev.source === "claude_stderr" &&
+          rawText.trimStart().startsWith("[claude-code:unrecognized_model]")
+        ) {
+          dbg("store", "raw: benign claude stderr suppressed", rawText.slice(0, 120));
+          break;
+        }
         if (rawText && (ev.source === "claude_stdout_text" || ev.source === "claude_stderr")) {
           const rawId = uuid();
           const entry: TimelineEntry = {

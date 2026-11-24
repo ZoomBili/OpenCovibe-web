@@ -177,7 +177,7 @@
     <!-- Remove button (×) -->
     {#if onRemove}
       <button
-        class="ml-auto shrink-0 flex h-4 w-4 items-center justify-center rounded opacity-0 text-muted-foreground hover:text-destructive hover:opacity-100 focus-visible:opacity-100 group-hover/folder:opacity-100 transition-opacity"
+        class="ml-auto shrink-0 flex h-4 w-4 items-center justify-center rounded touch:opacity-100 opacity-0 text-muted-foreground hover:text-destructive hover:opacity-100 focus-visible:opacity-100 group-hover/folder:opacity-100 transition-opacity"
         aria-label={t("sidebar_removeProject")}
         onclick={(e) => {
           e.stopPropagation();

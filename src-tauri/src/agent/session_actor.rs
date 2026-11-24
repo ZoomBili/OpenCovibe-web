@@ -58,6 +58,14 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Claude Code's SDK path prints a one-line diagnostic when a custom gateway model id
+/// (e.g. "opencode-go/...") is not in its built-in model registry. Requests still succeed and
+/// interactive `claude` does not print it; surfacing it as chat content is pure noise.
+fn is_benign_claude_stderr(text: &str) -> bool {
+    text.trim_start()
+        .starts_with("[claude-code:unrecognized_model]")
+}
+
 /// Extract content from `<promise>...</promise>` tag in text.
 fn extract_promise_tag(text: &str) -> Option<&str> {
     let start = text.find("<promise>")?;
@@ -249,8 +257,9 @@ struct SessionActor {
     /// without respawning. Injected into each `turn/start`. Ignored for Claude.
     codex_overrides: CodexTurnOverrides,
     /// Claude root/sudo spawn workaround: the CLI was launched in a safe permission mode because
-    /// `bypassPermissions`/`dontAsk` are rejected at startup under root. Applied via the control
-    /// protocol once `session_init` confirms the CLI is ready; holds turn dispatch until then.
+    /// the requested one is rejected at startup under root. Applied via the control protocol once
+    /// `session_init` arrives. It must NOT gate turn dispatch: the CLI only emits session_init
+    /// after the first user turn, so a dispatch hold here deadlocks startup.
     pending_permission_override: Option<String>,
     /// Current RunState string — identity dedup: skip emit if unchanged.
     state: String,
@@ -332,9 +341,9 @@ pub fn spawn_actor(
     // Codex app-server transport: the driver + its handshake messages. `None`/empty = Claude.
     codex: Option<CodexAppServer>,
     codex_startup: Vec<Value>,
-    /// Claude root/sudo spawn workaround: the CLI was launched in a safe permission mode because
-    /// `bypassPermissions`/`dontAsk` are rejected at startup under root. Applied via the control
-    /// protocol once `session_init` confirms the CLI is ready; holds turn dispatch until then.
+    // Claude root/sudo spawn workaround: the CLI was launched in a safe permission mode because
+    // `bypassPermissions`/`dontAsk` are rejected at startup under root. Applied via the control
+    // protocol once `session_init` confirms the CLI is ready; holds turn dispatch until then.
     pending_permission_override: Option<String>,
 ) -> SessionActorHandle {
     let tag = Arc::new(());
@@ -673,12 +682,11 @@ impl SessionActor {
         if self.codex.is_some() && !self.codex_ready {
             return;
         }
-        // Root/sudo spawn workaround: hold dispatch until the deferred permission-mode override
-        // has been applied (written via control protocol in the session_init handler). This
-        // guarantees the first user turn already runs in the requested mode.
-        if self.pending_permission_override.is_some() {
-            return;
-        }
+        // NOTE: never hold dispatch on `pending_permission_override`. Claude Code emits
+        // `system/init` only after it receives the first user turn, so waiting for
+        // session_init before sending that turn deadlocks startup (the CLI stays silent and
+        // the UI is stuck on "Starting session"). The deferred override is applied when
+        // session_init arrives; the first turn may therefore run in the spawn-safe mode.
 
         // HC #3: Barrier — try internal queue first when barrier is set
         if let Some(barrier_turn) = self.must_run_internal_for_turn {
@@ -2213,8 +2221,8 @@ impl SessionActor {
                     self.persist_and_emit(&event);
                     // Root/sudo spawn workaround: the CLI was launched in a safe permission mode
                     // (see session.rs claude_spawn_permission). Now that session_init confirms it
-                    // is ready, re-apply the requested mode via the control protocol, then release
-                    // the dispatch hold so the (queued) first user turn runs in that mode.
+                    // is ready, re-apply the requested mode via the control protocol. Dispatch is
+                    // not held on this: the first user turn already ran to trigger session_init.
                     if let Some(mode) = self.pending_permission_override.take() {
                         let override_request_id = format!("ocv_ctrl_{}", uuid::Uuid::new_v4());
                         let payload = serde_json::json!({
@@ -2682,6 +2690,14 @@ impl SessionActor {
         // due to the ANSI escapes). Log it for diagnostics, don't emit it.
         if self.codex.is_some() {
             log::debug!("[actor] codex stderr: {}", truncate_str(text, 300));
+            return;
+        }
+
+        if is_benign_claude_stderr(text) {
+            log::debug!(
+                "[actor] benign claude stderr suppressed: {}",
+                truncate_str(text, 300)
+            );
             return;
         }
 
@@ -3273,5 +3289,18 @@ mod tests {
         assert_eq!(strip_ansi(input), "2026-06-03 ERROR codex_core: failed");
         // Plain text is unchanged.
         assert_eq!(strip_ansi("no codes here"), "no codes here");
+    }
+
+    #[test]
+    fn benign_claude_stderr_is_suppressed() {
+        use super::is_benign_claude_stderr;
+        assert!(is_benign_claude_stderr(
+            "[claude-code:unrecognized_model] {\"model\":\"opencode-go/x\"}"
+        ));
+        assert!(is_benign_claude_stderr(
+            "  [claude-code:unrecognized_model] {}"
+        ));
+        // Real errors still surface.
+        assert!(!is_benign_claude_stderr("API Error: 500 internal"));
     }
 }

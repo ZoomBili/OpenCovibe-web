@@ -4,6 +4,22 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 
 本项目github开源地址为：[OpenCovibe-web](https://github.com/ZoomBili/OpenCovibe-web "OpenCovibe-web")
 
+现在同时支持桌面和手机浏览器访问，手机端会自动切换为紧凑布局与抽屉式导航。
+
+## 本次更新：移动端适配
+
+本次更新重点补齐手机 / 平板上的使用体验，桌面端行为保持不变：
+
+- **响应式布局**：`< 1024px`（Tailwind `lg`）进入移动布局，`< 640px`（`sm`）为窄屏档。新增 `src/lib/utils/viewport.svelte.ts` 单例，向组件暴露 `viewport.mobile`、`viewport.narrow`、`viewport.touch` 三个响应式状态。
+- **抽屉式导航**：左侧项目 / 会话栏和聊天右侧的工具活动面板，在手机上改为带遮罩的滑出抽屉；点击遮罩、按 Esc、切换页面或选中项目后自动关闭。桌面端仍保留可拖拽宽度的内联栏。
+- **刘海屏与软键盘**：`viewport-fit=cover` 配合 `env(safe-area-inset-*)`（`.pt-safe`、`.pb-safe`、`.pb-composer`），高度改用 `100dvh`；软键盘弹出时压缩布局而不是遮挡输入框；移动端表单控件强制 16px 字号，避免 iOS 聚焦时页面缩放。
+- **触屏交互**：新增 Tailwind `touch:` / `mouse:` 变体，原本“悬停才显示”的操作在触屏设备上默认可见；手机上的按钮触控区增大到 36px；手机上 Enter 换行、由发送按钮发送（外接键盘或桌面仍为 Enter 发送）。
+- **输入与弹层**：模型 / 权限下拉、附件面板、斜杠菜单等按视口宽度夹紧（clamp），不再溢出屏幕；手机上进入会话时不自动聚焦输入框，避免软键盘遮挡对话。
+- **页面细节**：手机状态栏隐藏次要文字、保留图标，并显示上下文占用百分比；历史、设置、用量、插件、发布说明等页面改为窄屏单列或双列布局。
+- **服务端修复**：
+  - root 运行时 Claude Code 不支持 `bypassPermissions`，启动权限改为回退到 `auto`，并修复了等待 `session_init` 才派发首轮消息导致界面卡在“正在启动会话”的死锁。
+  - 过滤 `[claude-code:unrecognized_model]` 这类自定义网关模型的无害 stderr 提示，不再混淆聊天记录。
+
 ## 计划中的功能清单
 - 支持快速下拉配置（回车键 或 ctrl+回车）发送对话
 - 支持对话结束后发送企微消息、浏览器铃声

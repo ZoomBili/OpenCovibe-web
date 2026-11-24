@@ -186,6 +186,7 @@
     bind:this={container}
     class="prose prose-sm dark:prose-invert max-w-none
       prose-p:text-foreground prose-p:leading-relaxed
+      max-sm:prose-p:text-[15px] max-sm:prose-li:text-[15px]
       prose-a:text-primary prose-a:underline prose-a:underline-offset-2
       prose-code:rounded prose-code:bg-muted/70 prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-code:font-mono prose-code:before:content-none prose-code:after:content-none
       prose-pre:m-0 prose-pre:p-0 prose-pre:bg-transparent prose-pre:border-0

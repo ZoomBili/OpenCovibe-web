@@ -54,6 +54,7 @@
   import { PLATFORM_PRESETS } from "$lib/utils/platform-presets";
   import { loadAgentSettingsCache } from "$lib/stores/agent-settings-cache.svelte";
   import type { PlatformCredential } from "$lib/types";
+  import { viewport } from "$lib/utils/viewport.svelte";
   import { TeamStore } from "$lib/stores/team-store.svelte";
   import { KeybindingStore } from "$lib/stores/keybindings.svelte";
   import { getTransport } from "$lib/transport";
@@ -106,6 +107,9 @@
   let favoriteRunIds = $derived(new Set(sidebarFavorites.map((f) => f.runId)));
   let settings = $state<UserSettings | null>(null);
   let sidebarOpen = $state(true);
+  /** Below `lg` the sidebar is an off-canvas drawer with its own open state. */
+  let mobileSidebarOpen = $state(false);
+  let sidebarVisible = $derived(viewport.mobile ? mobileSidebarOpen : sidebarOpen);
   let projectCwd = $state("");
   type ThemeMode = "light" | "dark" | "system";
   type ColorScheme = "warm" | "neutral";
@@ -863,6 +867,8 @@
 
   afterNavigate(({ to }) => {
     dbg("layout", "navigated to:", to?.url.pathname);
+    // On phones the sidebar is a drawer — close it once navigation lands.
+    closeMobileSidebar();
     // Auto-switch sidebar tab when navigating to /teams
     if (to?.url.pathname === "/teams") panelTab = "teams";
     // Sync plugin section from URL when navigating to /plugins
@@ -1056,6 +1062,7 @@
   });
 
   function newChat() {
+    closeMobileSidebar();
     goto("/chat");
   }
 
@@ -1142,6 +1149,8 @@
   function onFolderPicked(result: { hostName: string | null; path: string }) {
     const { hostName, path } = result;
     if (!path) return;
+    // The picker is opened from the drawer on phones — dismiss it once a folder is chosen.
+    closeMobileSidebar();
     if (hostName) {
       // Remote: persist and navigate to chat with host+folder
       setStoredRemoteCwd(hostName, path);
@@ -1164,8 +1173,23 @@
   }
 
   function toggleSidebar() {
+    if (viewport.mobile) {
+      mobileSidebarOpen = !mobileSidebarOpen;
+      dbg("layout", "mobile sidebar toggled", { open: mobileSidebarOpen });
+      return;
+    }
     sidebarOpen = !sidebarOpen;
   }
+
+  function closeMobileSidebar() {
+    if (!mobileSidebarOpen) return;
+    mobileSidebarOpen = false;
+  }
+
+  // Leaving the mobile breakpoint drops the drawer state so it can't reopen unexpectedly.
+  $effect(() => {
+    if (!viewport.mobile) mobileSidebarOpen = false;
+  });
 
   setContext("toggleSidebar", toggleSidebar);
 
@@ -1320,10 +1344,22 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="flex h-screen overflow-hidden">
+<div class="flex h-app overflow-hidden">
   <!-- Sidebar: Icon Rail + Content Panel -->
-  {#if sidebarOpen}
-    <aside class="flex shrink-0 bg-sidebar text-sidebar-foreground transition-all duration-200">
+  {#if sidebarVisible}
+    <!-- Mobile: dim the page behind the drawer and close on tap. -->
+    {#if viewport.mobile}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="fixed inset-0 z-40 bg-black/50 backdrop-blur-[1px] animate-fade-in"
+        onclick={closeMobileSidebar}
+        onkeydown={(e) => e.key === "Escape" && closeMobileSidebar()}
+      ></div>
+    {/if}
+    <aside
+      class="flex shrink-0 bg-sidebar text-sidebar-foreground transition-all duration-200
+        max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:shadow-2xl pt-safe"
+    >
       <!-- A. Icon Rail -->
       <div
         class="flex w-[44px] flex-col items-center border-r border-sidebar-border bg-black/[0.03] dark:bg-black/20"
@@ -1461,7 +1497,7 @@
                 onkeydown={(e) => e.key === "Escape" && (localePopupOpen = false)}
               ></div>
               <div
-                class="absolute bottom-0 left-full ml-1 z-50 min-w-[140px] rounded-md border border-sidebar-border bg-popover py-1 shadow-lg"
+                class="absolute bottom-0 left-full ml-1 z-50 min-w-[140px] rounded-md border border-sidebar-border bg-popover py-1 shadow-lg max-lg:bottom-full max-lg:left-0 max-lg:mb-1 max-lg:ml-0"
               >
                 {#each LOCALE_REGISTRY as entry}
                   <button
@@ -1570,13 +1606,29 @@
       <!-- B. Content Panel -->
       <div
         class="flex flex-none flex-col overflow-hidden border-r border-sidebar-border relative"
-        style:width="{sidebarWidth}px"
+        style:width={viewport.mobile ? "calc(100vw - 3.25rem)" : `${sidebarWidth}px`}
       >
         <!-- Panel header: Project selector + new chat -->
         <div class="flex h-14 items-center gap-1.5 border-b border-sidebar-border px-3">
           <span class="flex-1 min-w-0 truncate text-sm font-medium text-sidebar-foreground"
             >{pageName}</span
           >
+          <!-- Drawer close (mobile only) -->
+          <button
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors duration-150 lg:hidden"
+            onclick={closeMobileSidebar}
+            title={t("common_close")}
+          >
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
+            >
+          </button>
           <button
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors duration-150"
             onclick={() => openCliBrowser("/")}
@@ -2339,10 +2391,10 @@
             </div>
           {/if}
         {/if}
-        <!-- Resize handle -->
+        <!-- Resize handle (desktop only — there is no width to drag in the mobile drawer) -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 transition-colors z-10"
+          class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 transition-colors z-10 max-lg:hidden"
           onpointerdown={startResize}
         ></div>
       </div>
@@ -2364,14 +2416,24 @@
     <UpdateBanner />
     <!-- Top bar (non-chat pages only — chat uses SessionStatusBar) -->
     {#if !isChatPage}
-      <header class="flex h-14 items-center gap-3 border-b px-4">
+      <header class="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:gap-3 sm:px-4">
         <button
-          class="rounded-md p-1.5 hover:bg-accent transition-all duration-150"
+          class="flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent transition-all duration-150"
           onclick={toggleSidebar}
           title={t("layout_toggleSidebar")}
         >
+          <!-- Menu icon on phones (the button opens the drawer), panel icon on desktop -->
           <svg
-            class="h-4 w-4"
+            class="h-4 w-4 lg:hidden"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg
+          >
+          <svg
+            class="hidden h-4 w-4 lg:block"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -2382,16 +2444,16 @@
           >
         </button>
 
-        <div class="flex items-center gap-2 text-sm">
-          <span class="text-muted-foreground">{t("layout_appName")}</span>
+        <div class="flex min-w-0 items-center gap-2 text-sm">
+          <span class="truncate text-muted-foreground max-sm:hidden">{t("layout_appName")}</span>
           <svg
-            class="h-3.5 w-3.5 text-muted-foreground/50"
+            class="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 max-sm:hidden"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
             stroke-width="2"><path d="m9 18 6-6-6-6" /></svg
           >
-          <span class="font-medium">{pageName}</span>
+          <span class="truncate font-medium">{pageName}</span>
         </div>
       </header>
     {/if}

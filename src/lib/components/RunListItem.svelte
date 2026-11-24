@@ -160,7 +160,7 @@
     <div class="flex items-center gap-1 shrink-0">
       {#if canResume && onresume}
         <button
-          class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent transition-opacity"
+          class="touch:opacity-100 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent transition-opacity"
           onclick={(e) => {
             e.stopPropagation();
             onresume(run.id, "resume");

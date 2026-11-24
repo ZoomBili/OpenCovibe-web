@@ -239,7 +239,7 @@
 <div class="h-full overflow-hidden">
   {#if teamStore.teams.length === 0 && !teamStore.loading}
     <!-- Empty state -->
-    <div class="flex flex-col items-center justify-center h-full text-center px-6">
+    <div class="flex h-full flex-col items-center justify-center px-4 text-center sm:px-6">
       <div
         class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-muted"
       >
@@ -714,9 +714,9 @@
 
       <!-- ═══ Task Board Sidebar ═══ -->
       <div
-        class="shrink-0 border-l border-border flex flex-col h-full transition-all duration-200 {sidebarCollapsed
+        class="flex h-full shrink-0 flex-col border-l border-border transition-all duration-200 {sidebarCollapsed
           ? 'w-8'
-          : 'w-[280px]'}"
+          : 'w-[280px] max-lg:w-[min(280px,78vw)]'}"
       >
         {#if sidebarCollapsed}
           <!-- Collapsed: narrow strip with toggle + task count -->

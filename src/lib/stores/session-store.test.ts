@@ -1163,6 +1163,18 @@ describe("SessionStore reducer", () => {
       expect((store.timeline[0] as { content: string }).content).toContain("claude_stderr");
     });
 
+    it("raw benign claude stderr is suppressed", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "raw",
+        run_id: "run-1",
+        source: "claude_stderr",
+        data: '[claude-code:unrecognized_model] {"model":"opencode-go/x"}',
+      } as unknown as Parameters<typeof store.applyEvent>[0]);
+      expect(store.timeline).toHaveLength(0);
+    });
+
     it("raw unknown source: silently ignored, no crash", () => {
       store.run = makeRun("run-1");
       store.phase = "running";

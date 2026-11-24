@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { viewport } from "$lib/utils/viewport.svelte";
   import { goto } from "$app/navigation";
   import type {
     Attachment,
@@ -336,8 +337,9 @@
     modeDropdownOpen = true;
     if (modeBtnEl) {
       const rect = modeBtnEl.getBoundingClientRect();
-      // Open upward (input is at bottom of screen)
-      modeDropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${rect.left}px; z-index:50;`;
+      // Open upward (input is at bottom of screen), clamped into the viewport.
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236));
+      modeDropdownStyle = `position:fixed; bottom:${window.innerHeight - rect.top + 4}px; left:${left}px; z-index:50;`;
     }
   }
 
@@ -1167,6 +1169,10 @@
 
     // ── Normal input ──
     if (e.key === "Enter" && !e.shiftKey) {
+      // Touch phones/tablets: Enter inserts a newline (native textarea behavior) — long,
+      // multi-line prompts are the norm here, and the send button is one tap away.
+      // Hardware keyboards (desktop, or >=lg screens) keep Enter-to-send.
+      if (viewport.touch && viewport.mobile) return;
       e.preventDefault();
       handleSend();
     }
@@ -1989,7 +1995,7 @@
 <!-- Web drag handlers — only fire when Tauri dragDropEnabled is false (non-Tauri builds).
      When dragDropEnabled: true, Tauri intercepts OS drag events and Web drag events do not fire. -->
 <div
-  class="border-t border-border bg-muted/30 px-4 py-3 relative"
+  class="relative border-t border-border bg-muted/30 px-3 pb-composer pt-2 sm:px-4 sm:py-3"
   ondragenter={handleDragEnter}
   ondragleave={handleDragLeave}
   ondragover={handleDragOver}
@@ -2158,7 +2164,7 @@
 
   <!-- L3: Quick action pills + git branch (above input container) -->
   {#if (slashEnabled && quickActions.length > 0) || gitBranch}
-    <div class="flex items-center gap-1 px-1 pb-1.5">
+    <div class="flex items-center gap-1 px-1 pb-1.5 max-sm:-mx-1 max-sm:px-2">
       {#if slashEnabled && quickActions.length > 0}
         <div class="flex items-center gap-1 overflow-x-auto scrollbar-hide">
           {#each quickActions as cmd (cmd.name)}
@@ -2252,8 +2258,9 @@
       placeholder={effectivePlaceholder}
       rows={1}
       {disabled}
-      class="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50"
-      style="min-height: 36px;"
+      class="w-full resize-none bg-transparent px-3 pt-3 pb-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50 sm:px-4"
+      enterkeyhint="enter"
+      style="min-height: 56px;"
     ></textarea>
 
     {#if atMenuOpen}
@@ -2294,9 +2301,11 @@
     {/if}
 
     <!-- Bottom action bar -->
-    <div class="flex items-center justify-between px-2 pb-2">
+    <div class="flex items-center justify-between gap-1 px-1.5 pb-2 sm:px-2">
       <!-- Left: agent selector + permission mode -->
-      <div class="flex items-center gap-1">
+      <!-- No overflow container here: AgentSelector's menu is absolutely positioned above
+           this row and would be clipped by a scroll container. Wrap instead. -->
+      <div class="flex min-w-0 flex-wrap items-center gap-1">
         {#if !hasRun && onAgentChange}
           <AgentSelector value={agent} onchange={(a) => onAgentChange?.(a)} />
         {/if}
@@ -2349,25 +2358,27 @@
             <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
-          {t("permissions_rules")}
+          <span class="max-sm:hidden">{t("permissions_rules")}</span>
         </button>
         {#if showAuthBadge && !hasRun && agent !== "codex"}
           <!-- Legacy composer auth badge (Claude only). The hero's AgentAuthBadge is the
                canonical auth surface now; this is slated for removal post hero-migration and
                is skipped for Codex (it would show wrong Anthropic/version data). -->
-          <AuthSourceBadge
-            {authOverview}
-            {authSourceLabel}
-            {authSourceCategory}
-            {apiKeySource}
-            {hasRun}
-            {authMode}
-            {platformCredentials}
-            {platformId}
-            {onAuthModeChange}
-            {onPlatformChange}
-            {localProxyStatuses}
-          />
+          <div class="flex max-sm:hidden">
+            <AuthSourceBadge
+              {authOverview}
+              {authSourceLabel}
+              {authSourceCategory}
+              {apiKeySource}
+              {hasRun}
+              {authMode}
+              {platformCredentials}
+              {platformId}
+              {onAuthModeChange}
+              {onPlatformChange}
+              {localProxyStatuses}
+            />
+          </div>
         {/if}
         {#if showSkillSelector}
           <SkillSelector
@@ -2404,8 +2415,7 @@
         {#if slashEnabled}
           <button
             bind:this={slashBtnEl}
-            class="flex h-7 w-7 items-center justify-center rounded-lg
-              text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
+            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors sm:h-7 sm:w-7"
             onclick={openSlashMenuFromButton}
             title={t("prompt_slashCommands")}
           >
@@ -2431,7 +2441,7 @@
           onchange={handleFileSelect}
         />
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-30"
+          class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-30 sm:h-7 sm:w-7"
           onclick={() => fileInput?.click()}
           disabled={pendingAttachments.length >= 8}
           title={t("prompt_attachFiles")}
@@ -2453,7 +2463,7 @@
         {#if IS_MAC}
           <!-- Screenshot capture button (macOS only) -->
           <button
-            class="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-30"
+            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors disabled:opacity-30 sm:h-7 sm:w-7"
             onclick={() => api.captureScreenshot()}
             disabled={pendingAttachments.length >= 8}
             title={t("prompt_screenshot")}
@@ -2480,7 +2490,7 @@
             {#if btwMode}
               <!-- BTW send: blue theme -->
               <button
-                class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors bg-blue-500 text-white hover:bg-blue-600"
+                class="flex h-9 w-9 items-center justify-center rounded-lg transition-colors bg-blue-500 text-white hover:bg-blue-600 sm:h-7 sm:w-7"
                 onclick={handleBtwSend}
                 title="Send side question"
               >
@@ -2499,7 +2509,7 @@
             {:else}
               <!-- Mid-turn send: allow injecting a message while agent is running -->
               <button
-                class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors bg-primary text-primary-foreground hover:bg-primary/90"
+                class="flex h-9 w-9 items-center justify-center rounded-lg transition-colors bg-primary text-primary-foreground hover:bg-primary/90 sm:h-7 sm:w-7"
                 onclick={handleSend}
                 title={t("prompt_send")}
               >
@@ -2522,7 +2532,7 @@
             <button
               onclick={() => (btwMode = !btwMode)}
               title="Side question (btw)"
-              class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {btwMode
+              class="flex h-9 w-9 items-center justify-center rounded-lg transition-colors sm:h-7 sm:w-7 {btwMode
                 ? 'text-blue-500 bg-blue-500/10'
                 : 'text-muted-foreground/60 hover:text-foreground hover:bg-accent'}"
             >
@@ -2541,7 +2551,7 @@
           {/if}
         {:else if !canInterrupt}
           <button
-            class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {canSend
+            class="flex h-9 w-9 items-center justify-center rounded-lg transition-colors sm:h-7 sm:w-7 {canSend
               ? 'bg-primary text-primary-foreground hover:bg-primary/90'
               : 'text-muted-foreground/40'}"
             onclick={handleSend}
@@ -2564,7 +2574,7 @@
         {#if canInterrupt && onInterrupt}
           <button
             type="button"
-            class="flex h-7 w-7 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-wait disabled:opacity-60"
+            class="flex h-9 w-9 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-wait disabled:opacity-60 sm:h-7 sm:w-7"
             onclick={onInterrupt}
             disabled={interrupting}
             aria-busy={interrupting}
@@ -2588,7 +2598,7 @@
   {#if modeDropdownOpen}
     <div
       bind:this={modeDropdownEl}
-      class="min-w-[220px] w-max rounded-md border bg-background shadow-lg animate-fade-in"
+      class="w-max min-w-[220px] max-w-[calc(100vw-1rem)] rounded-md border bg-background shadow-lg animate-fade-in"
       style={modeDropdownStyle}
     >
       <div class="p-1">
@@ -2636,7 +2646,7 @@
       role="presentation"
     ></div>
     <div
-      class="relative z-50 flex h-[80vh] w-[min(90vw,900px)] flex-col rounded-lg border bg-background p-4 shadow-lg"
+      class="relative z-50 flex h-[min(80dvh,44rem)] w-[calc(100vw-1.5rem)] flex-col rounded-lg border bg-background p-4 shadow-lg sm:w-[min(90vw,900px)]"
     >
       <div class="mb-3 flex items-center justify-between gap-2">
         <h2 class="text-sm font-semibold">

@@ -1895,9 +1895,12 @@ pub(crate) fn is_root() -> bool {
 ///
 /// Returns `(spawn_mode, pending_override)`:
 /// - Normal case: spawn with the requested mode, no deferred override.
-/// - root/sudo + `bypassPermissions`/`dontAsk`: Claude refuses those at startup, so spawn in a
-///   root-safe mode (`acceptEdits`) and return the requested mode as a deferred override that the
-///   actor applies via the control protocol once the CLI reports `session_init`.
+/// - root/sudo + `bypassPermissions`: **cannot be honored**. Claude Code refuses to launch with
+///   it and also refuses a live `set_permission_mode` to it unless the process was launched with
+///   `--dangerously-skip-permissions` (error_code `bypass_not_launched`). Deferring the switch
+///   would deadlock startup, so fall back to `auto` (supported under root) instead.
+/// - root/sudo + `dontAsk`: current CLIs accept it at launch, but older ones rejected it. Keep the
+///   safe spawn + deferred upgrade; the actor no longer blocks the first turn on it.
 pub(crate) fn claude_spawn_permission(
     permission_mode: &Option<String>,
     running_as_root: bool,
@@ -1905,8 +1908,18 @@ pub(crate) fn claude_spawn_permission(
     let Some(mode) = permission_mode.as_deref() else {
         return (None, None);
     };
-    if running_as_root && (mode == "bypassPermissions" || mode == "dontAsk") {
-        (Some("acceptEdits".to_string()), Some(mode.to_string()))
+    if running_as_root {
+        match mode {
+            "bypassPermissions" => {
+                log::warn!(
+                    "[session] running as root: Claude Code does not support bypassPermissions; \
+                     falling back to permission mode auto"
+                );
+                (Some("auto".to_string()), None)
+            }
+            "dontAsk" => (Some("acceptEdits".to_string()), Some(mode.to_string())),
+            _ => (permission_mode.clone(), None),
+        }
     } else {
         (permission_mode.clone(), None)
     }
@@ -3006,13 +3019,14 @@ mod tests {
     }
 
     #[test]
-    fn claude_spawn_permission_downgrades_bypass_as_root() {
-        // Root + bypassPermissions → spawn safe (acceptEdits) + deferred override.
+    fn claude_spawn_permission_falls_back_from_bypass_as_root() {
+        // Root + bypassPermissions → spawn "auto"; a deferred switch is impossible
+        // (Claude rejects it at launch and at runtime with bypass_not_launched).
         let root_bypass = claude_spawn_permission(&Some("bypassPermissions".to_string()), true);
-        assert_eq!(root_bypass.0.as_deref(), Some("acceptEdits"));
-        assert_eq!(root_bypass.1.as_deref(), Some("bypassPermissions"));
+        assert_eq!(root_bypass.0.as_deref(), Some("auto"));
+        assert!(root_bypass.1.is_none());
 
-        // Same downgrade for dontAsk.
+        // dontAsk keeps the safe spawn + deferred upgrade.
         let root_dont_ask = claude_spawn_permission(&Some("dontAsk".to_string()), true);
         assert_eq!(root_dont_ask.0.as_deref(), Some("acceptEdits"));
         assert_eq!(root_dont_ask.1.as_deref(), Some("dontAsk"));

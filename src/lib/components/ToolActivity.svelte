@@ -12,6 +12,7 @@
   import FilePreviewPane from "$lib/components/FilePreviewPane.svelte";
   import { onMount } from "svelte";
   import { fpsCounter, isPerfEnabled } from "$lib/utils/perf";
+  import { viewport } from "$lib/utils/viewport.svelte";
   import SessionInfoPanel from "$lib/components/SessionInfoPanel.svelte";
   import StatusIcon from "$lib/components/StatusIcon.svelte";
   import {
@@ -153,6 +154,12 @@
   });
 
   let effectiveWidth = $derived(clampWidth(savedWidth));
+  /** Collapsed rail is 32px on desktop; phones render the panel inside a full-width drawer. */
+  let panelWidthCss = $derived(
+    viewport.mobile ? "100%" : collapsed ? "32px" : `${effectiveWidth}px`,
+  );
+  /** The expanded panel keeps its full layout width even while collapsed (keep-alive). */
+  let innerWidthCss = $derived(viewport.mobile ? "100%" : `${effectiveWidth}px`);
 
   // ── Resize handle (VS Code-style: ghost line during drag, single commit on release) ──
   // Why this approach: in-place live resize forces chat-main reflow on every pointermove,
@@ -587,8 +594,8 @@
 {/if}
 <aside
   bind:this={asideEl}
-  class="relative h-full border-l border-border bg-muted/30 overflow-hidden"
-  style="width: {collapsed ? '32px' : effectiveWidth + 'px'}; contain: layout style;"
+  class="relative h-full border-l border-border bg-muted/30 overflow-hidden max-lg:border-l-0 max-lg:bg-background"
+  style="width: {panelWidthCss}; contain: layout style;"
 >
   <!-- Always-mounted expanded panel (hidden when collapsed). opacity:0 alongside
        visibility:hidden: each tab re-asserts visibility:visible for keep-alive, and a
@@ -598,19 +605,19 @@
        layout so the panel can stay mounted. -->
   <div
     class="absolute top-0 left-0 h-full flex flex-col"
-    style="width: {effectiveWidth}px; visibility: {collapsed
+    style="width: {innerWidthCss}; visibility: {collapsed
       ? 'hidden'
       : 'visible'}; opacity: {collapsed ? '0' : '1'}; pointer-events: {collapsed
       ? 'none'
       : 'auto'};"
     aria-hidden={collapsed}
   >
-    <!-- Resize handle on the left edge -->
+    <!-- Resize handle on the left edge (desktop only — no free width on a phone) -->
     <div
       role="separator"
       aria-orientation="vertical"
       tabindex="-1"
-      class="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 z-20 {resizing
+      class="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 z-20 max-lg:hidden {resizing
         ? 'bg-primary/50'
         : ''}"
       onpointerdown={onResizeStart}
@@ -743,12 +750,22 @@
           </button>
         </div>
         <button
-          class="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded hover:bg-accent"
+          class="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground max-lg:mr-1"
           onclick={onToggle}
           title={t("toolActivity_collapse")}
         >
+          <!-- Phones: this closes the overlay drawer, so an X reads better than a chevron. -->
           <svg
-            class="h-4 w-4"
+            class="h-4 w-4 lg:hidden"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg
+          >
+          <svg
+            class="hidden h-4 w-4 lg:block"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"

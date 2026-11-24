@@ -1714,14 +1714,14 @@
 </script>
 
 {#key currentLocale()}
-  <div class="max-w-4xl mx-auto p-6 animate-slide-up">
+  <div class="mx-auto max-w-4xl p-3 animate-slide-up sm:p-6">
     <h1 class="text-2xl font-bold mb-5">{t("settings_title")}</h1>
 
     <!-- Tab bar -->
-    <div class="flex gap-1 border-b border-border mb-6">
+    <div class="mb-4 flex gap-1 overflow-x-auto border-b border-border scrollbar-hide sm:mb-6">
       {#each tabs as tab (tab.id)}
         <button
-          class="flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors relative
+          class="relative flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-sm font-medium transition-colors sm:px-4
           {activeTab === tab.id
             ? 'text-foreground'
             : 'text-muted-foreground hover:text-foreground/80'}"
@@ -1750,7 +1750,7 @@
     {#if activeTab === "general"}
       <div class="space-y-6">
         <!-- Default Agent Card -->
-        <Card class="p-6 space-y-4">
+        <Card class="p-4 sm:p-6 space-y-4">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             {t("settings_general_defaultAgent")}
           </h2>
@@ -1778,7 +1778,7 @@
         </Card>
 
         <!-- Language Card -->
-        <Card class="p-6 space-y-4">
+        <Card class="p-4 sm:p-6 space-y-4">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             {t("settings_general_language")}
           </h2>
@@ -1810,7 +1810,7 @@
         </Card>
 
         <!-- Display Card -->
-        <Card class="p-6 space-y-4">
+        <Card class="p-4 sm:p-6 space-y-4">
           <div class="flex items-center justify-between">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_general_display")}
@@ -1855,7 +1855,7 @@
 
         <!-- Web Server Card (desktop only) -->
         {#if getTransport().isDesktop()}
-          <Card class="p-6 space-y-4">
+          <Card class="p-4 sm:p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_general_webServer")}
             </h2>
@@ -2296,7 +2296,7 @@
     {:else if activeTab === "connection"}
       <div class="space-y-6">
         <!-- Claude authentication -->
-        <Card class="p-6 space-y-5">
+        <Card class="p-4 sm:p-6 space-y-5">
           <div class="flex items-center justify-between">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_connection_claudeTitle")}
@@ -2526,10 +2526,10 @@
                   >{t("settings_general_platform")}</span
                 >
                 <!-- Platform grid (always visible) -->
-                <div class="grid grid-cols-4 gap-1.5">
+                <div class="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
                   {#each groupedPlatforms as group}
                     <div
-                      class="col-span-4 px-1 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60"
+                      class="col-span-full px-1 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60"
                     >
                       {group.label}
                     </div>
@@ -2552,7 +2552,7 @@
                           <span
                             role="button"
                             tabindex="0"
-                            class="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
+                            class="absolute top-1 right-1 touch:opacity-100 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-0.5 cursor-pointer"
                             onclick={(e: MouseEvent) => {
                               e.stopPropagation();
                               deleteCustomEndpoint(preset.id);
@@ -3025,7 +3025,7 @@
         </Card>
 
         <!-- Codex Status -->
-        <Card class="p-6 space-y-4">
+        <Card class="p-4 sm:p-6 space-y-4">
           <div class="flex items-center justify-between">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_codex_title")}
@@ -3484,7 +3484,7 @@
           <span class="ml-3 text-sm text-muted-foreground">{t("settings_cliConfig_loading")}</span>
         </div>
       {:else if cliConfigError}
-        <Card class="p-6">
+        <Card class="p-4 sm:p-6">
           <p class="text-sm text-red-400">
             {t("settings_cliConfig_loadFailed", { error: cliConfigError })}
           </p>
@@ -3507,7 +3507,7 @@
             {t("settings_cliConfig_claudeGroup")}
           </h2>
           <!-- Claude CLI launch command/path (#155) -->
-          <Card class="p-6 space-y-3">
+          <Card class="p-4 sm:p-6 space-y-3">
             <div class="flex items-center justify-between">
               <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
                 {t("settings_cliConfig_launch")}
@@ -3548,7 +3548,7 @@
             />
           </Card>
           <!-- Behavior -->
-          <Card class="p-6 space-y-4">
+          <Card class="p-4 sm:p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_cliConfig_behavior")}
             </h2>
@@ -3615,7 +3615,7 @@
           </Card>
 
           <!-- Appearance -->
-          <Card class="p-6 space-y-4">
+          <Card class="p-4 sm:p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_cliConfig_appearance")}
             </h2>
@@ -3701,7 +3701,7 @@
           </Card>
 
           <!-- Advanced -->
-          <Card class="p-6 space-y-4">
+          <Card class="p-4 sm:p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_cliConfig_advanced")}
             </h2>
@@ -3780,7 +3780,7 @@
           </h2>
 
           <!-- ── Codex Config ── -->
-          <Card class="p-6 space-y-4">
+          <Card class="p-4 sm:p-6 space-y-4">
             <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {t("settings_codexConfig_title")}
             </h2>
@@ -4039,7 +4039,7 @@
     {:else if activeTab === "shortcuts"}
       <div class="space-y-6">
         <!-- App shortcuts (editable) -->
-        <Card class="p-6 space-y-5">
+        <Card class="p-4 sm:p-6 space-y-5">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             {t("settings_shortcuts_appShortcuts")}
           </h2>
@@ -4066,7 +4066,7 @@
         </Card>
 
         <!-- Fixed shortcuts -->
-        <Card class="p-6 space-y-5">
+        <Card class="p-4 sm:p-6 space-y-5">
           <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             {t("settings_shortcuts_inputFixed")}
           </h2>
@@ -4085,7 +4085,7 @@
         </Card>
 
         <!-- CLI shortcuts (collapsible) -->
-        <Card class="p-6 space-y-4">
+        <Card class="p-4 sm:p-6 space-y-4">
           <button
             class="flex items-center gap-2 text-sm font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors w-full"
             onclick={() => (cliSectionOpen = !cliSectionOpen)}
@@ -4131,7 +4131,7 @@
         </Card>
 
         <!-- Codex CLI shortcuts (collapsible, read-only) -->
-        <Card class="p-6 space-y-4">
+        <Card class="p-4 sm:p-6 space-y-4">
           <button
             class="flex items-center gap-2 text-sm font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors w-full"
             onclick={() => (codexCliSectionOpen = !codexCliSectionOpen)}
@@ -4181,7 +4181,7 @@
 
       <!-- ═══ Remote tab ═══ -->
     {:else if activeTab === "remote"}
-      <Card class="p-6 space-y-5">
+      <Card class="p-4 sm:p-6 space-y-5">
         <div class="flex items-start justify-between">
           <div>
             <p class="text-sm font-medium">{t("settings_remote_title")}</p>
@@ -4270,7 +4270,7 @@
               : t("settings_remote_addHost")}
           </p>
 
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label class="block">
               <span class="text-xs text-muted-foreground block mb-1"
                 >{t("settings_remote_name")} *</span
@@ -4624,7 +4624,7 @@
 
       <!-- ═══ Debug tab ═══ -->
     {:else if activeTab === "debug"}
-      <Card class="p-6 space-y-5">
+      <Card class="p-4 sm:p-6 space-y-5">
         <div class="flex items-center justify-between">
           <div>
             <p class="text-sm font-medium">{t("settings_debug_title")}</p>

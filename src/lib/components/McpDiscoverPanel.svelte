@@ -447,9 +447,9 @@
       </div>
     {:else}
       <!-- Side-by-side: list (left) + detail (right) -->
-      <div class="flex gap-3" style="height: calc(100vh - 340px); min-height: 300px;">
+      <div class="flex gap-3 max-lg:flex-col" style="height: calc(100dvh - 340px); min-height: 300px;">
         <!-- Left: scrollable server list -->
-        <div class="w-[280px] shrink-0 overflow-y-auto space-y-1.5 pr-1">
+        <div class="w-[280px] shrink-0 space-y-1.5 overflow-y-auto pr-1 max-lg:h-1/2 max-lg:w-full">
           {#each displayResults as server}
             <div
               class="w-full text-left rounded-lg border px-3 py-2 transition-colors cursor-pointer {detail?.name ===

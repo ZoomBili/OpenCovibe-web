@@ -164,7 +164,7 @@
   }
 </script>
 
-<div class="rounded-lg border border-border bg-background shadow-lg w-80 animate-fade-in">
+<div class="w-80 max-w-[calc(100vw-1.5rem)] rounded-lg border border-border bg-background shadow-lg animate-fade-in">
   <!-- Header -->
   <div class="flex items-center justify-between px-3 py-2 border-b border-border">
     <span class="text-xs font-semibold text-foreground">{t("mcp_serversTitle")}</span>

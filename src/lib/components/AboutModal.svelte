@@ -28,7 +28,7 @@
 
 {#if open}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm sm:p-6"
     role="dialog"
     aria-modal="true"
     tabindex="-1"
@@ -36,7 +36,7 @@
     onkeydown={handleKeydown}
   >
     <div
-      class="relative flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-border bg-background shadow-2xl"
+      class="relative flex max-h-[85dvh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
     >
       <!-- Header -->
       <div class="flex items-center justify-between border-b border-border px-6 py-4">

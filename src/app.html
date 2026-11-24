@@ -2,7 +2,19 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover + safe-area padding lets the shell/inputs reach the screen edges
+         on notched phones without the notch clipping content. interactive-widget makes the
+         on-screen keyboard resize the layout instead of the visual viewport, so the composer
+         stays visible while typing. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>OpenCovibe</title>
     <style>
       #app-splash {

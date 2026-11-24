@@ -227,7 +227,7 @@
 </script>
 
 <div
-  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm animate-fade-in sm:p-6"
   role="dialog"
   aria-modal="true"
   tabindex="-1"
@@ -235,7 +235,7 @@
   onkeydown={handleKeydown}
 >
   <div
-    class="relative flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-border bg-background shadow-2xl animate-slide-up"
+    class="relative flex max-h-[min(85dvh,52rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl animate-slide-up"
   >
     <!-- Header -->
     <div class="border-b border-border px-6 py-4">

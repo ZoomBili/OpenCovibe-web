@@ -301,7 +301,7 @@
 <div class="flex h-full flex-col overflow-hidden">
   <!-- Preview header (only in preview mode with a real path) -->
   {#if !isRemote && path && mode === "preview"}
-    <div class="flex items-center gap-2 border-b px-3 py-1.5 shrink-0">
+    <div class="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:px-3">
       <svg
         class="h-3.5 w-3.5 shrink-0 opacity-40"
         viewBox="0 0 24 24"
@@ -319,7 +319,7 @@
         <span class="h-2 w-2 rounded-full bg-amber-400 shrink-0" title={t("explorer_modified")}
         ></span>
       {/if}
-      <span class="text-[11px] text-muted-foreground truncate flex-1 min-w-0">{path}</span>
+      <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground max-sm:hidden">{path}</span>
       {#if kind === "markdown"}
         <div class="flex rounded-md border bg-background p-0.5 shrink-0">
           <button
@@ -359,7 +359,7 @@
 
   <!-- Diff header (only in diff mode) -->
   {#if !isRemote && path && mode === "diff"}
-    <div class="flex items-center gap-2 border-b px-3 py-1.5 shrink-0">
+    <div class="flex shrink-0 items-center gap-2 border-b px-2 py-1.5 sm:px-3">
       {#if onCloseDiff}
         <button
           class="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
@@ -386,8 +386,8 @@
     <!-- Bottom layer: real renderer chosen by `editable`. Hidden when an overlay is active. -->
     <div
       class="absolute inset-0"
-      style:visibility={showCodeEditor ? "visible" : "hidden"}
-      style:pointer-events={showCodeEditor ? "auto" : "none"}
+      style:visibility={showCodeEditor && active ? "visible" : "hidden"}
+      style:pointer-events={showCodeEditor && active ? "auto" : "none"}
       aria-hidden={!showCodeEditor}
     >
       {#if editable && !isRemote}
