@@ -6,7 +6,7 @@ OpenCovibe-Web 是基于[OpenCovibe](https://github.com/AnyiWang/OpenCovibe "Ope
 
 现在同时支持桌面和手机浏览器访问，手机端会自动切换为紧凑布局与抽屉式导航。
 
-## 本次更新：移动端适配
+## 261124更新：移动端适配
 
 本次更新重点补齐手机 / 平板上的使用体验，桌面端行为保持不变：
 
