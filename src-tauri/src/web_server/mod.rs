@@ -113,6 +113,10 @@ pub async fn serve_from_env() -> Result<(), String> {
         log::warn!("Set OPENCOVIBE_TOKEN to keep a stable token across restarts");
     }
 
+    // Cron scheduler lives with the server process so scheduled skills survive browser
+    // disconnects. It stops with `cancel_token` during graceful shutdown.
+    crate::automation::scheduler::spawn(state.clone());
+
     let router = router::build_router(state.clone());
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal(cancel_token))

@@ -49,6 +49,9 @@ import type {
   CodexAuthResult,
   ThreadGoal,
   GoalStatus,
+  AutomationTask,
+  AutomationTaskInput,
+  CronValidation,
 } from "./types";
 
 // Runs
@@ -247,6 +250,40 @@ export async function testNotificationChannel(
 ): Promise<NotificationTestResult> {
   dbg("api", "testNotificationChannel", { channel });
   return invoke<NotificationTestResult>("test_notification_channel", { channel, settings });
+}
+
+// ── Automations (cron-scheduled skills) ──
+
+export async function listAutomations(): Promise<AutomationTask[]> {
+  dbg("api", "listAutomations");
+  return invoke<AutomationTask[]>("list_automations");
+}
+
+export async function createAutomation(input: AutomationTaskInput): Promise<AutomationTask> {
+  dbg("api", "createAutomation", { name: input.name, cron: input.cron });
+  return invoke<AutomationTask>("create_automation", { input });
+}
+
+export async function updateAutomation(
+  id: string,
+  input: AutomationTaskInput,
+): Promise<AutomationTask> {
+  dbg("api", "updateAutomation", id);
+  return invoke<AutomationTask>("update_automation", { id, input });
+}
+
+export async function deleteAutomation(id: string): Promise<void> {
+  dbg("api", "deleteAutomation", id);
+  await invoke<boolean>("delete_automation", { id });
+}
+
+export async function validateCron(expression: string): Promise<CronValidation> {
+  return invoke<CronValidation>("validate_cron", { expression });
+}
+
+export async function runAutomationNow(id: string): Promise<{ run_id: string }> {
+  dbg("api", "runAutomationNow", id);
+  return invoke<{ run_id: string }>("run_automation_now", { id });
 }
 
 export async function getAgentSettings(agent: string): Promise<AgentSettings> {

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod automation;
 pub mod commands;
 pub mod models;
 pub mod notifications;

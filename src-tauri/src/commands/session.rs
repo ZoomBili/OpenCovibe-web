@@ -37,7 +37,7 @@ async fn get_cmd_tx(
 
 /// Helper: stop an existing actor for a run_id, await its shutdown.
 /// Returns true if an actor was stopped.
-pub(super) async fn stop_actor(sessions: &ActorSessionMap, run_id: &str) -> Result<bool, String> {
+pub(crate) async fn stop_actor(sessions: &ActorSessionMap, run_id: &str) -> Result<bool, String> {
     let handle = {
         let mut map = sessions.lock().await;
         map.remove(run_id)
@@ -494,6 +494,7 @@ pub(crate) async fn start_session_impl(
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
     permission_mode_override: Option<String>,
+    skills: Option<Vec<CodexSkillRef>>,
 ) -> Result<(), String> {
     let _guard = spawn_locks.acquire(&run_id).await;
     let session_mode = mode.unwrap_or_default();
@@ -765,7 +766,7 @@ pub(crate) async fn start_session_impl(
             .send(ActorCommand::SendMessage {
                 text,
                 attachments: att_list,
-                skills: Vec::new(),
+                skills: skills.clone().unwrap_or_default(),
                 reply: reply_tx,
             })
             .await
@@ -824,6 +825,7 @@ pub async fn start_session(
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
     permission_mode_override: Option<String>,
+    skills: Option<Vec<CodexSkillRef>>,
 ) -> Result<(), String> {
     start_session_impl(
         emitter,
@@ -837,6 +839,7 @@ pub async fn start_session(
         attachments,
         platform_id,
         permission_mode_override,
+        skills,
     )
     .await
 }

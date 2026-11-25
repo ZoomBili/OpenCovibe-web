@@ -18,6 +18,7 @@
   import Input from "$lib/components/Input.svelte";
   import KeybindingEditor from "$lib/components/KeybindingEditor.svelte";
   import NotificationSettingsPanel from "$lib/components/NotificationSettingsPanel.svelte";
+  import AutomationSettingsPanel from "$lib/components/AutomationSettingsPanel.svelte";
   import ProviderIcon from "$lib/components/ProviderIcon.svelte";
   import { formatKeyDisplay } from "$lib/stores/keybindings.svelte";
   import {
@@ -51,6 +52,7 @@
   // ── Tab state ──
   type SettingsTab =
     | "general"
+    | "automation"
     | "connection"
     | "notifications"
     | "cli-config"
@@ -59,6 +61,7 @@
     | "debug";
   const VALID_TABS: SettingsTab[] = [
     "general",
+    "automation",
     "connection",
     "notifications",
     "cli-config",
@@ -74,6 +77,7 @@
 
   const tabLabels: Record<SettingsTab, () => string> = {
     general: () => t("settings_tab_general"),
+    automation: () => t("settings_tab_automation"),
     connection: () => t("settings_tab_connection"),
     notifications: () => t("settings_tab_notifications"),
     "cli-config": () => t("settings_tab_cliConfig"),
@@ -86,6 +90,10 @@
     {
       id: "general",
       icon: "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z",
+    },
+    {
+      id: "automation",
+      icon: "M12 6v6l4 2 M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z",
     },
     {
       id: "connection",
@@ -1768,6 +1776,11 @@
         }}
       />
     </div>
+
+    <!-- ═══ Automation tab ═══ -->
+    {#if activeTab === "automation"}
+      <AutomationSettingsPanel />
+    {/if}
 
     <!-- ═══ General tab ═══ -->
     {#if activeTab === "general"}

@@ -1,4 +1,5 @@
 pub mod artifacts;
+pub mod automations;
 pub mod changelog;
 pub mod claude_usage;
 pub mod cli_config;

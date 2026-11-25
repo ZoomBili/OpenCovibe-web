@@ -252,6 +252,50 @@ pub async fn dispatch_command(
             let result = crate::commands::settings::update_agent_settings(agent, patch)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
+        // ── Automations (cron-scheduled skills) ──
+        "list_automations" => {
+            let tasks = crate::commands::automations::list_automations()?;
+            serde_json::to_value(tasks).map_err(|e| e.to_string())
+        }
+        "create_automation" => {
+            let input: crate::models::AutomationTaskInput = params
+                .get("input")
+                .cloned()
+                .ok_or_else(|| "missing required param: input".to_string())
+                .and_then(|value| {
+                    serde_json::from_value(value)
+                        .map_err(|error| format!("invalid automation: {}", error))
+                })?;
+            let task = crate::commands::automations::create_automation(input)?;
+            serde_json::to_value(task).map_err(|e| e.to_string())
+        }
+        "update_automation" => {
+            let id = extract_str(&params, "id")?;
+            let input: crate::models::AutomationTaskInput = params
+                .get("input")
+                .cloned()
+                .ok_or_else(|| "missing required param: input".to_string())
+                .and_then(|value| {
+                    serde_json::from_value(value)
+                        .map_err(|error| format!("invalid automation: {}", error))
+                })?;
+            let task = crate::commands::automations::update_automation(id, input)?;
+            serde_json::to_value(task).map_err(|e| e.to_string())
+        }
+        "delete_automation" => {
+            let id = extract_str(&params, "id")?;
+            crate::commands::automations::delete_automation(id)?;
+            Ok(json!(true))
+        }
+        "validate_cron" => {
+            let expression = extract_str(&params, "expression")?;
+            Ok(crate::commands::automations::validate_cron(expression))
+        }
+        "run_automation_now" => {
+            let id = extract_str(&params, "id")?;
+            crate::commands::automations::run_automation_now(state, id).await
+        }
         "test_notification_channel" => {
             let channel = extract_str(&params, "channel")?;
             // Accept the UI's unsaved draft so "Test" works before "Save".
@@ -983,6 +1027,9 @@ pub async fn dispatch_command(
                 .get("permission_mode_override")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let skills: Option<Vec<crate::agent::session_protocol::CodexSkillRef>> = params
+                .get("skills")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
             crate::commands::session::start_session_impl(
                 &state.emitter,
                 &state.sessions,
@@ -995,6 +1042,7 @@ pub async fn dispatch_command(
                 attachments,
                 platform_id,
                 permission_mode_override,
+                skills,
             )
             .await?;
             Ok(json!(true))
@@ -1006,11 +1054,16 @@ pub async fn dispatch_command(
                 .get("attachments")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            let skills: Vec<crate::agent::session_protocol::CodexSkillRef> = params
+                .get("skills")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
             log::debug!(
-                "[dispatch] send_session_message: run_id={}, msg_len={}, attachments={}",
+                "[dispatch] send_session_message: run_id={}, msg_len={}, attachments={}, skills={}",
                 run_id,
                 message.len(),
-                attachments.len()
+                attachments.len(),
+                skills.len()
             );
             let cmd_tx = {
                 let map = state.sessions.lock().await;
@@ -1023,7 +1076,7 @@ pub async fn dispatch_command(
                 .send(ActorCommand::SendMessage {
                     text: message,
                     attachments,
-                    skills: Vec::new(),
+                    skills,
                     reply: reply_tx,
                 })
                 .await

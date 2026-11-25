@@ -787,6 +787,64 @@ export interface StandaloneSkill {
   can_toggle?: boolean;
 }
 
+export interface AutomationExecution {
+  id: string;
+  run_id?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  /** running | completed | failed | stopped | timeout */
+  status: string;
+  error?: string | null;
+  /** Final assistant message preview. */
+  result_preview?: string | null;
+  result_subtype?: string | null;
+}
+
+export interface AutomationTask {
+  id: string;
+  name: string;
+  skill_name: string;
+  skill_path: string;
+  skill_agent: "claude" | "codex";
+  prompt: string;
+  cwd: string;
+  model?: string | null;
+  cron: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_run_at?: string | null;
+  last_run_id?: string | null;
+  last_status?: string | null;
+  last_error?: string | null;
+  executions: AutomationExecution[];
+  /** RFC3339 next fire time (server-computed). */
+  next_run_at?: string | null;
+  /** Same time formatted in server local time — safe to display directly. */
+  next_run_local?: string | null;
+}
+
+/** Editable subset sent to create_automation / update_automation. */
+export interface AutomationTaskInput {
+  name: string;
+  skill_name: string;
+  skill_path: string;
+  skill_agent: "claude" | "codex";
+  prompt: string;
+  cwd: string;
+  model?: string | null;
+  cron: string;
+  enabled: boolean;
+}
+
+export interface CronValidation {
+  valid: boolean;
+  error?: string;
+  next_runs?: string[];
+  next_runs_local?: string[];
+  timezone?: string;
+}
+
 export interface InstalledPlugin {
   name: string;
   description: string;

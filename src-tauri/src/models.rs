@@ -1836,6 +1836,102 @@ impl Default for StandaloneSkill {
     }
 }
 
+// ── Automation (cron-scheduled skill) types ──
+
+/// One execution attempt of an automation. Kept inline with the task (bounded list) so the
+/// UI can show a small execution log without loading every historical run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationExecution {
+    /// Stable key for the UI (a failure before a run exists has no run_id).
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// running | completed | failed | stopped | timeout
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Final assistant message preview, for the "result" column in the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_preview: Option<String>,
+    /// Agent result subtype (e.g. "success") when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_subtype: Option<String>,
+}
+
+/// A saved automation: run an existing skill on a cron schedule.
+///
+/// This is independent of the agent's own `CronCreate` tool (which lives inside a live
+/// CLI session). Automations are owned by the web server: the scheduler survives browser
+/// disconnects and spawns a fresh run + session each time it fires.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationTask {
+    pub id: String,
+    pub name: String,
+    /// Skill identifier as the CLI knows it (e.g. "review-pr").
+    pub skill_name: String,
+    /// Absolute path to the skill entry (needed for Codex structured `{type:"skill"}` refs).
+    #[serde(default)]
+    pub skill_path: String,
+    /// Which CLI the skill belongs to: "claude" or "codex".
+    #[serde(default = "default_agent_claude")]
+    pub skill_agent: String,
+    /// Extra instruction appended after the skill invocation. Empty = run the skill as-is.
+    #[serde(default)]
+    pub prompt: String,
+    /// Working directory for the spawned run. Empty = user settings / home.
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Standard 5-field cron expression, evaluated in the server's local time zone.
+    pub cron: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Most recent first, capped by storage. Always present (possibly empty) for the UI.
+    #[serde(default)]
+    pub executions: Vec<AutomationExecution>,
+    /// Runtime-only: recomputed on every list call; never used by the scheduler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_local: Option<String>,
+}
+
+/// Editable fields accepted by create/update. Kept separate from `AutomationTask` so
+/// server-owned fields (id, timestamps, last-run bookkeeping) can't be forged by the client.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutomationTaskInput {
+    pub name: String,
+    pub skill_name: String,
+    #[serde(default)]
+    pub skill_path: String,
+    #[serde(default = "default_agent_claude")]
+    pub skill_agent: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub cron: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InstalledPlugin {
     #[serde(default, alias = "id")]
