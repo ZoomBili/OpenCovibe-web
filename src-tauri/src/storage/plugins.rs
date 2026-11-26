@@ -45,6 +45,30 @@ struct InstallCountEntry {
     pub unique_installs: u64,
 }
 
+/// `~/.claude/settings.json` / project settings — only `enabledPlugins` matters here.
+#[derive(Deserialize, Default)]
+struct PluginSettingsFile {
+    #[serde(default, rename = "enabledPlugins")]
+    enabled_plugins: HashMap<String, serde_json::Value>,
+}
+
+/// `~/.claude/plugins/installed_plugins.json` (version 2).
+/// Keys are `name@marketplace`; values are one entry per installed scope.
+#[derive(Deserialize, Default)]
+struct InstalledPluginsFile {
+    #[serde(default)]
+    plugins: HashMap<String, Vec<InstalledPluginEntry>>,
+}
+
+#[derive(Deserialize, Default)]
+struct InstalledPluginEntry {
+    #[serde(default, rename = "installPath")]
+    install_path: String,
+    /// Set for project/local-scope installs; those only apply inside that project.
+    #[serde(default, rename = "projectPath")]
+    project_path: Option<String>,
+}
+
 /// Generic JSON file reader — returns None on read or parse errors.
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     match std::fs::read_to_string(path) {
@@ -335,29 +359,156 @@ fn scan_commands_dir(
     }
 }
 
-/// List standalone skills from ~/.claude/skills/*/SKILL.md
-/// and optionally from {cwd}/.claude/skills/*/SKILL.md.
+/// List standalone skills from ~/.claude/skills/*/SKILL.md,
+/// optionally from {cwd}/.claude/skills/*/SKILL.md, and from enabled plugins.
 pub fn list_standalone_skills(cwd: &str) -> Vec<StandaloneSkill> {
+    let project_dir = if cwd.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(cwd).join(".claude").join("skills"))
+    };
+    let plugin_dirs = enabled_plugin_skill_dirs(cwd);
+    list_standalone_skills_with_roots(cwd, &skills_dir(), project_dir.as_deref(), &plugin_dirs)
+}
+
+/// Inner implementation with injectable paths for testing.
+fn list_standalone_skills_with_roots(
+    cwd: &str,
+    user_dir: &Path,
+    project_dir: Option<&Path>,
+    plugin_dirs: &[(String, PathBuf)],
+) -> Vec<StandaloneSkill> {
     let mut skills = Vec::new();
 
     // User-scope skills (~/.claude/skills/)
-    scan_skills_dir(&skills_dir(), "user", &mut skills);
+    scan_skills_dir(user_dir, "user", &mut skills);
 
     // Project-scope skills ({cwd}/.claude/skills/)
-    if !cwd.is_empty() {
-        let project_dir = PathBuf::from(cwd).join(".claude").join("skills");
-        scan_skills_dir(&project_dir, "project", &mut skills);
+    if let Some(dir) = project_dir {
+        scan_skills_dir(dir, "project", &mut skills);
+    }
+
+    // Plugin skills are namespaced (`superpowers:brainstorming`) because that is the
+    // name the CLI exposes in `system/init`; the automation runner sends `/<name>`.
+    // A user/project skill with the same name wins, so plugin output never shadows
+    // skills the user can edit locally.
+    let mut seen: std::collections::HashSet<String> =
+        skills.iter().map(|skill| skill.name.clone()).collect();
+    for (plugin, dir) in plugin_dirs {
+        let mut plugin_skills = Vec::new();
+        scan_skills_dir_in_plugin(dir, plugin, &mut plugin_skills);
+        for skill in plugin_skills {
+            if seen.insert(skill.name.clone()) {
+                skills.push(skill);
+            }
+        }
     }
 
     log::debug!(
-        "[plugins] list_standalone_skills: found {} skills",
-        skills.len()
+        "[plugins] list_standalone_skills: found {} skills (cwd={:?})",
+        skills.len(),
+        cwd
     );
     skills
 }
 
+/// Plugin names and their `skills/` directories, restricted to plugins the user
+/// enabled in settings and that are actually installed. Paths come from
+/// `installed_plugins.json` so plugin version bumps need no code change.
+fn enabled_plugin_skill_dirs(cwd: &str) -> Vec<(String, PathBuf)> {
+    let home = crate::storage::teams::claude_home_dir();
+    let mut settings_paths = vec![home.join("settings.json"), home.join("settings.local.json")];
+    if !cwd.is_empty() {
+        let project_settings = PathBuf::from(cwd).join(".claude");
+        settings_paths.push(project_settings.join("settings.json"));
+        settings_paths.push(project_settings.join("settings.local.json"));
+    }
+    resolve_enabled_plugin_dirs(
+        &settings_paths,
+        &plugins_dir().join("installed_plugins.json"),
+        cwd,
+    )
+}
+
+/// Resolve enabled plugin skill directories. Missing or unreadable config yields
+/// no plugin skills — the user/project list must keep working regardless.
+fn resolve_enabled_plugin_dirs(
+    settings_paths: &[PathBuf],
+    installed_plugins_path: &Path,
+    cwd: &str,
+) -> Vec<(String, PathBuf)> {
+    let mut enabled: HashMap<String, bool> = HashMap::new();
+    for path in settings_paths {
+        if let Some(settings) = read_json::<PluginSettingsFile>(path) {
+            for (key, value) in settings.enabled_plugins {
+                enabled.insert(key, value.as_bool() == Some(true));
+            }
+        }
+    }
+    if !enabled.values().any(|on| *on) {
+        return Vec::new();
+    }
+
+    let installed: InstalledPluginsFile = match read_json(installed_plugins_path) {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+
+    // Sorted for deterministic dropdown order; HashMap iteration is not.
+    let mut keys: Vec<&String> = enabled
+        .iter()
+        .filter(|(_, on)| **on)
+        .map(|(key, _)| key)
+        .collect();
+    keys.sort();
+
+    let mut result = Vec::new();
+    for key in keys {
+        let Some(entries) = installed.plugins.get(key) else {
+            continue;
+        };
+        let Some(entry) = entries.iter().find(|entry| {
+            if entry.install_path.is_empty() || !Path::new(&entry.install_path).is_dir() {
+                return false;
+            }
+            match entry.project_path.as_deref() {
+                None => true,
+                Some(project) => !cwd.is_empty() && project == cwd,
+            }
+        }) else {
+            continue;
+        };
+        let plugin_name = key.split('@').next().unwrap_or(key).to_string();
+        result.push((
+            plugin_name,
+            PathBuf::from(&entry.install_path).join("skills"),
+        ));
+    }
+
+    log::debug!(
+        "[plugins] resolve_enabled_plugin_dirs: {} plugin(s)",
+        result.len()
+    );
+    result
+}
+
 /// Scan a directory for skills and append to the result vector.
 fn scan_skills_dir(dir: &Path, scope: &str, skills: &mut Vec<StandaloneSkill>) {
+    scan_skills_dir_inner(dir, scope, None, skills)
+}
+
+/// Scan a plugin's `skills/` directory. Names are namespaced with the plugin name
+/// and the skills are read-only because the plugin manager owns those files.
+fn scan_skills_dir_in_plugin(dir: &Path, plugin: &str, skills: &mut Vec<StandaloneSkill>) {
+    scan_skills_dir_inner(dir, "plugin", Some(plugin), skills)
+}
+
+fn scan_skills_dir_inner(
+    dir: &Path,
+    scope: &str,
+    plugin: Option<&str>,
+    skills: &mut Vec<StandaloneSkill>,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -382,12 +533,20 @@ fn scan_skills_dir(dir: &Path, scope: &str, skills: &mut Vec<StandaloneSkill>) {
         } else {
             name
         };
+        let name = match plugin {
+            Some(plugin) => format!("{plugin}:{name}"),
+            None => name,
+        };
+        let managed_by_plugin = plugin.is_some();
 
         skills.push(StandaloneSkill {
             name,
             description,
             path: skill_md.to_string_lossy().to_string(),
             scope: scope.to_string(),
+            can_edit: !managed_by_plugin,
+            can_delete: !managed_by_plugin,
+            can_toggle: !managed_by_plugin,
             ..Default::default()
         });
     }
@@ -2926,5 +3085,225 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "foo");
         assert_eq!(commands[0].description, "Foo helper");
+    }
+
+    // ── Plugin skill discovery ──
+
+    fn write_skill(root: &Path, dir_name: &str, frontmatter_name: Option<&str>) {
+        let dir = root.join(dir_name);
+        fs::create_dir_all(&dir).unwrap();
+        let body = match frontmatter_name {
+            Some(name) => format!("---\nname: {name}\ndescription: demo\n---\nbody"),
+            None => "body without frontmatter\n".to_string(),
+        };
+        fs::write(dir.join("SKILL.md"), body).unwrap();
+    }
+
+    #[test]
+    fn plugin_skills_are_namespaced_and_read_only() {
+        // CLI lists plugin skills as `superpowers:brainstorming`; the automation
+        // runner sends `/<name>`, so the bare skill name would not trigger.
+        let root = tempdir().unwrap();
+        let plugin_skills = root.path().join("plugin").join("skills");
+        write_skill(&plugin_skills, "brainstorming", Some("brainstorming"));
+
+        let skills = list_standalone_skills_with_roots(
+            "",
+            &root.path().join("user-skills"),
+            None,
+            &[("superpowers".to_string(), plugin_skills.clone())],
+        );
+
+        assert_eq!(skills.len(), 1, "expected exactly the plugin skill");
+        let skill = &skills[0];
+        assert_eq!(skill.name, "superpowers:brainstorming");
+        assert_eq!(skill.scope, "plugin");
+        assert!(skill.enabled);
+        assert!(!skill.can_edit && !skill.can_delete && !skill.can_toggle);
+        assert_eq!(
+            Path::new(&skill.path),
+            plugin_skills.join("brainstorming").join("SKILL.md")
+        );
+    }
+
+    #[test]
+    fn plugin_skill_falls_back_to_directory_name() {
+        let root = tempdir().unwrap();
+        let plugin_skills = root.path().join("plugin").join("skills");
+        write_skill(&plugin_skills, "no-name", None);
+
+        let skills = list_standalone_skills_with_roots(
+            "",
+            &root.path().join("user-skills"),
+            None,
+            &[("demo".to_string(), plugin_skills)],
+        );
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "demo:no-name");
+    }
+
+    #[test]
+    fn plugin_skill_is_skipped_when_name_already_listed() {
+        // A user/project skill that happens to share the namespaced name wins;
+        // user/project output otherwise stays exactly as before.
+        let root = tempdir().unwrap();
+        let user_skills = root.path().join("user-skills");
+        write_skill(
+            &user_skills,
+            "brainstorming",
+            Some("superpowers:brainstorming"),
+        );
+        let plugin_skills = root.path().join("plugin").join("skills");
+        write_skill(&plugin_skills, "brainstorming", Some("brainstorming"));
+
+        let skills = list_standalone_skills_with_roots(
+            "",
+            &user_skills,
+            None,
+            &[("superpowers".to_string(), plugin_skills)],
+        );
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].scope, "user");
+    }
+
+    #[test]
+    fn resolve_enabled_plugin_dirs_only_returns_enabled_with_existing_install_path() {
+        let root = tempdir().unwrap();
+        let install_path = root.path().join("cache").join("superpowers");
+        fs::create_dir_all(&install_path).unwrap();
+        let settings = root.path().join("settings.json");
+        fs::write(
+            &settings,
+            r#"{"enabledPlugins":{"on@mp":true,"off@mp":false,"gone@mp":true}}"#,
+        )
+        .unwrap();
+        let installed = root.path().join("installed_plugins.json");
+        fs::write(
+            &installed,
+            format!(
+                r#"{{"version":2,"plugins":{{
+                    "on@mp":[{{"scope":"user","installPath":"{}"}}],
+                    "off@mp":[{{"scope":"user","installPath":"{}"}}],
+                    "gone@mp":[{{"scope":"user","installPath":"{}"}}]
+                }}}}"#,
+                install_path.display(),
+                install_path.display(),
+                root.path().join("missing").display()
+            ),
+        )
+        .unwrap();
+
+        let dirs = resolve_enabled_plugin_dirs(&[settings], &installed, "");
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].0, "on");
+        assert_eq!(dirs[0].1, install_path.join("skills"));
+    }
+
+    #[test]
+    fn resolve_enabled_plugin_dirs_project_settings_override_user() {
+        let root = tempdir().unwrap();
+        let install_path = root.path().join("cache").join("demo");
+        fs::create_dir_all(&install_path).unwrap();
+        let user_settings = root.path().join("settings.json");
+        fs::write(
+            &user_settings,
+            r#"{"enabledPlugins":{"demo@mp":true,"other@mp":false}}"#,
+        )
+        .unwrap();
+        let project_settings = root.path().join("project-settings.local.json");
+        fs::write(
+            &project_settings,
+            r#"{"enabledPlugins":{"demo@mp":false,"other@mp":true}}"#,
+        )
+        .unwrap();
+        let installed = root.path().join("installed_plugins.json");
+        fs::write(
+            &installed,
+            format!(
+                r#"{{"version":2,"plugins":{{
+                    "demo@mp":[{{"scope":"user","installPath":"{}"}}],
+                    "other@mp":[{{"scope":"user","installPath":"{}"}}]
+                }}}}"#,
+                install_path.display(),
+                install_path.display()
+            ),
+        )
+        .unwrap();
+
+        let dirs = resolve_enabled_plugin_dirs(&[user_settings, project_settings], &installed, "");
+        let names: Vec<&str> = dirs.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["other"], "project settings must override user");
+    }
+
+    #[test]
+    fn resolve_enabled_plugin_dirs_skips_installs_from_other_projects() {
+        let root = tempdir().unwrap();
+        let install_path = root.path().join("cache").join("demo");
+        fs::create_dir_all(&install_path).unwrap();
+        let cwd = root.path().join("my-project");
+        fs::create_dir_all(&cwd).unwrap();
+        let settings = root.path().join("settings.json");
+        fs::write(
+            &settings,
+            r#"{"enabledPlugins":{"global@mp":true,"local@mp":true,"other@mp":true}}"#,
+        )
+        .unwrap();
+        let installed = root.path().join("installed_plugins.json");
+        fs::write(
+            &installed,
+            format!(
+                r#"{{"version":2,"plugins":{{
+                    "global@mp":[{{"scope":"user","installPath":"{}"}}],
+                    "local@mp":[{{"scope":"project","installPath":"{}","projectPath":"{}"}}],
+                    "other@mp":[{{"scope":"project","installPath":"{}","projectPath":"/elsewhere"}}]
+                }}}}"#,
+                install_path.display(),
+                install_path.display(),
+                cwd.display(),
+                install_path.display()
+            ),
+        )
+        .unwrap();
+
+        let dirs = resolve_enabled_plugin_dirs(&[settings], &installed, cwd.to_str().unwrap());
+        let names: Vec<&str> = dirs.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["global", "local"]);
+    }
+
+    #[test]
+    fn resolve_enabled_plugin_dirs_survives_corrupt_config() {
+        let root = tempdir().unwrap();
+        let settings = root.path().join("settings.json");
+        fs::write(&settings, "{not json").unwrap();
+        let installed = root.path().join("installed_plugins.json");
+        fs::write(&installed, "also not json").unwrap();
+
+        assert!(
+            resolve_enabled_plugin_dirs(std::slice::from_ref(&settings), &installed, "").is_empty()
+        );
+        assert!(
+            resolve_enabled_plugin_dirs(&[root.path().join("absent.json")], &installed, "")
+                .is_empty()
+        );
+
+        // Sanity check: a valid pair does resolve, so the empty results above come
+        // from the corruption rather than the function never returning anything.
+        let install_path = root.path().join("cache").join("demo");
+        fs::create_dir_all(&install_path).unwrap();
+        fs::write(&settings, r#"{"enabledPlugins":{"demo@mp":true}}"#).unwrap();
+        fs::write(
+            &installed,
+            format!(
+                r#"{{"version":2,"plugins":{{"demo@mp":[{{"scope":"user","installPath":"{}"}}]}}}}"#,
+                install_path.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_enabled_plugin_dirs(&[settings], &installed, "").len(),
+            1
+        );
     }
 }
