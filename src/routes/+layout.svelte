@@ -1,6 +1,7 @@
 <script lang="ts">
   import "../app.css";
   import { escapeHtml } from "$lib/utils/ansi";
+  import * as desktopNotifications from "$lib/utils/desktop-notifications";
   import { APP_VERSION } from "$lib/version";
   import {
     listRuns,
@@ -523,6 +524,7 @@
   async function loadSettings() {
     try {
       settings = await getUserSettings();
+      desktopNotifications.setSettings(settings.notifications ?? null);
       const normalizedWd = normalizeCwd(settings.working_directory);
       if (normalizedWd) {
         localStorage.setItem("ocv:settings-cwd", normalizedWd);

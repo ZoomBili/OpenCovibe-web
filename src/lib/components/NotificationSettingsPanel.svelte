@@ -4,6 +4,14 @@
   import type { NotificationSettings, NotificationTestResult } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
+  import {
+    getState,
+    requestPermission,
+    sendTest,
+    setEnabled,
+    setSettings,
+    type DesktopNotificationState,
+  } from "$lib/utils/desktop-notifications";
   import Card from "$lib/components/Card.svelte";
   import Button from "$lib/components/Button.svelte";
   import Input from "$lib/components/Input.svelte";
@@ -53,14 +61,59 @@
   let testResult = $state<{ channel: "wecom" | "http"; result: NotificationTestResult } | null>(
     null,
   );
+  let desktopState = $state<DesktopNotificationState>(getState());
+
+  function refreshDesktopState() {
+    desktopState = getState();
+  }
+
+  function canUseDesktop(): boolean {
+    return desktopState.supported && desktopState.secure;
+  }
+
+  function desktopStatusLabel(): string {
+    if (!desktopState.supported) return t("settings_notifications_desktopUnsupported");
+    if (!desktopState.secure) return t("settings_notifications_desktopInsecure");
+    switch (desktopState.permission) {
+      case "granted":
+        return t("settings_notifications_desktopGranted");
+      case "denied":
+        return t("settings_notifications_desktopDenied");
+      default:
+        return t("settings_notifications_desktopDefault");
+    }
+  }
+
+  async function toggleDesktop() {
+    if (desktopState.enabled) {
+      setEnabled(false);
+      refreshDesktopState();
+      return;
+    }
+    if (!canUseDesktop()) return;
+    if (desktopState.permission !== "granted") {
+      const result = await requestPermission();
+      refreshDesktopState();
+      if (result !== "granted") return;
+    }
+    setEnabled(true);
+    refreshDesktopState();
+  }
+
+  async function requestDesktopPermission() {
+    await requestPermission();
+    refreshDesktopState();
+  }
 
   function applyToForm(next: NotificationSettings) {
     draft = next;
     mobilesText = (next.wecom.mentioned_mobiles ?? []).join(", ");
     linkBaseText = next.link_base_url ?? "";
+    setSettings(next);
   }
 
   onMount(async () => {
+    refreshDesktopState();
     try {
       const settings = await api.getUserSettings();
       applyToForm(normalize(settings.notifications));
@@ -217,6 +270,65 @@
       <p class="text-sm text-muted-foreground">{t("settings_notifications_loading")}</p>
     </Card>
   {:else}
+    <!-- Browser desktop notifications (device-local) -->
+    <Card class="p-4 sm:p-6 space-y-4">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+            {t("settings_notifications_desktop")}
+          </h2>
+          <p class="mt-1 text-xs text-muted-foreground">
+            {t("settings_notifications_desktopDesc")}
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={desktopState.enabled}
+          aria-label={t("settings_notifications_desktopEnable")}
+          disabled={!canUseDesktop()}
+          class="relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 {desktopState.enabled
+            ? 'bg-primary'
+            : 'bg-neutral-700'} {canUseDesktop() ? '' : 'cursor-not-allowed opacity-50'}"
+          onclick={toggleDesktop}
+        >
+          <span
+            class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform {desktopState.enabled
+              ? 'translate-x-6'
+              : 'translate-x-1'}"
+          ></span>
+        </button>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <p
+          role="status"
+          class="text-xs {desktopState.permission === 'granted' && canUseDesktop()
+            ? 'text-emerald-500'
+            : 'text-muted-foreground'}"
+        >
+          {desktopStatusLabel()}
+        </p>
+        {#if canUseDesktop() && desktopState.permission === "default"}
+          <Button variant="outline" size="sm" onclick={requestDesktopPermission}>
+            {t("settings_notifications_desktopRequest")}
+          </Button>
+        {:else if canUseDesktop() && desktopState.permission === "granted"}
+          <Button variant="outline" size="sm" onclick={sendTest}>
+            {t("settings_notifications_desktopTest")}
+          </Button>
+        {/if}
+      </div>
+
+      <p class="text-[11px] leading-snug text-muted-foreground">
+        {t("settings_notifications_desktopHint")}
+      </p>
+      {#if !draft.enabled}
+        <p class="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+          {t("settings_notifications_desktopNeedsMaster")}
+        </p>
+      {/if}
+    </Card>
+
     <!-- Master switch + events -->
     <Card class="p-4 sm:p-6 space-y-5">
       <div class="flex items-start justify-between gap-4">
