@@ -10,6 +10,7 @@ import { dbg, dbgWarn } from "$lib/utils/debug";
 import type { BusEvent, HookEvent } from "$lib/types";
 import type { SessionStore } from "./session-store.svelte";
 import { markAttention, clearAttention } from "./attention-store.svelte";
+import { notifyBusEvent } from "$lib/utils/desktop-notifications";
 import { getTransport } from "$lib/transport";
 
 // ── Handler interfaces (page-level DOM callbacks) ──
@@ -221,6 +222,9 @@ export class EventMiddleware {
     this._trackAttention(ev);
 
     const store = this._subscriptions.get(ev.run_id);
+    // Browser notifications are decided independently of store subscription so
+    // the notification module can be tested in isolation; ctx is only metadata.
+    notifyBusEvent(ev, store ? { runName: store.run?.name, cwd: store.run?.cwd } : undefined);
     if (!store) return;
 
     // Push to batch buffer

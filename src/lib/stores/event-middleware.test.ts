@@ -43,10 +43,15 @@ vi.mock("./attention-store.svelte", () => ({
   _resetForTest: vi.fn(),
 }));
 
+vi.mock("$lib/utils/desktop-notifications", () => ({
+  notifyBusEvent: vi.fn(),
+}));
+
 // Import after mocks
 import { EventMiddleware } from "./event-middleware";
 import { dbgWarn } from "$lib/utils/debug";
 import { markAttention, clearAttention } from "./attention-store.svelte";
+import { notifyBusEvent } from "$lib/utils/desktop-notifications";
 
 // ── Helpers ──
 
@@ -64,6 +69,7 @@ function fireBusEvent(ev: BusEvent): void {
 /** Minimal mock of SessionStore with the methods EventMiddleware calls */
 function mockStore() {
   return {
+    run: { name: "Demo", cwd: "/tmp/demo" },
     applyEvent: vi.fn(),
     applyEventBatch: vi.fn(),
     applyHookEvent: vi.fn(),
@@ -91,6 +97,7 @@ describe("EventMiddleware", () => {
     mockTransport.subscribeRun.mockClear();
     mockTransport.unsubscribeRun.mockClear();
     mockTransport.listen.mockClear();
+    vi.mocked(notifyBusEvent).mockClear();
     mw = new EventMiddleware();
   });
 
@@ -183,6 +190,20 @@ describe("EventMiddleware", () => {
       handler({ run_id: "run-1", input_tokens: 100, output_tokens: 50, cost: 0.01 });
 
       expect(store.applyHookUsage).toHaveBeenCalledOnce();
+    });
+
+    it("forwards bus events to the desktop notification dispatcher", async () => {
+      await mw.start();
+      const store = mockStore();
+      mw.subscribeCurrent("run-1", store as any);
+
+      const ev = makeBusEvent("run-1", "run_state", { state: "completed" });
+      fireBusEvent(ev);
+
+      expect(notifyBusEvent).toHaveBeenCalledWith(ev, {
+        runName: "Demo",
+        cwd: "/tmp/demo",
+      });
     });
   });
 
