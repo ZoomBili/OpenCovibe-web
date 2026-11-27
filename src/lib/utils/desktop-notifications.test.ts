@@ -8,8 +8,10 @@ import {
   eventAllowed,
   isActivelyViewing,
   nextDesktopToggleAction,
+  notifyBusEvent,
   projectLabel,
   sendTest,
+  setSettings,
   shouldDisplayNotice,
   type DesktopNotificationState,
   type DisplayDecision,
@@ -259,3 +261,72 @@ describe("sendTest", () => {
     expect(sendTest()).toBe("unsupported");
   });
 });
+
+describe("notification options", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubNotifyWindow() {
+    const calls: unknown[][] = [];
+    class FakeNotification {
+      static permission = "granted";
+      static requestPermission = vi.fn(async () => "granted");
+      onclick: (() => void) | null = null;
+      constructor(...args: unknown[]) {
+        calls.push(args);
+      }
+    }
+    const win = {
+      isSecureContext: true,
+      Notification: FakeNotification,
+      localStorage: {
+        getItem: (key: string) => (key === "ocv:desktop-notifications" ? "1" : null),
+        setItem: () => {},
+        removeItem: () => {},
+      },
+      location: { assign: vi.fn() },
+      focus: vi.fn(),
+    };
+    vi.stubGlobal("window", win);
+    return { calls };
+  }
+
+  it("sendTest does not set a tag, so repeated tests always alert", () => {
+    const { calls } = stubWindowForOptions("granted");
+    expect(sendTest()).toBe("sent");
+    const opts = calls[0][1] as Record<string, unknown>;
+    expect(opts.tag).toBeUndefined();
+  });
+
+  it("run notifications do not set a tag, so every turn alerts", () => {
+    const { calls } = stubNotifyWindow();
+    setSettings(settings());
+    notifyBusEvent(
+      { type: "run_state", run_id: "run-tag-test", state: "completed" } as unknown as BusEvent,
+      { runName: "Demo" },
+    );
+    expect(calls.length).toBe(1);
+    const opts = calls[0][1] as Record<string, unknown>;
+    expect(opts.tag).toBeUndefined();
+  });
+});
+
+function stubWindowForOptions(permission: string) {
+  const calls: unknown[][] = [];
+  class FakeNotification {
+    static permission = permission;
+    static requestPermission = vi.fn(async () => permission);
+    constructor(...args: unknown[]) {
+      calls.push(args);
+    }
+  }
+  vi.stubGlobal("window", {
+    isSecureContext: true,
+    Notification: FakeNotification,
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    location: { assign: vi.fn() },
+    focus: vi.fn(),
+  });
+  return { calls };
+}

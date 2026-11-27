@@ -258,7 +258,7 @@ function display(title: string, body: string, runId: string, key: string, now: n
   const Ctor = notificationCtor();
   if (!Ctor) return;
   try {
-    const notice = new Ctor(title, { body, tag: `ocv-${key}`, data: { runId } });
+    const notice = new Ctor(title, { body, data: { runId } });
     notice.onclick = () => {
       try {
         window.focus();
@@ -320,7 +320,6 @@ export function sendTest(): DesktopTestResult {
       body: zh
         ? "如果你看到这条通知，浏览器桌面通知已生效。"
         : "If you see this, browser desktop notifications work.",
-      tag: "ocv-test",
     });
     return "sent";
   } catch (e) {
