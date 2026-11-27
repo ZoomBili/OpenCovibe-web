@@ -980,19 +980,6 @@
         { value: "stable", label: t("settings_cliConfig_optStable") },
       ],
     },
-    {
-      key: "preferredNotifChannel",
-      label: t("settings_cliConfig_notifChannelLabel"),
-      description: t("settings_cliConfig_notifChannelDesc"),
-      group: "advanced",
-      type: "enum",
-      default: "auto",
-      options: [
-        { value: "auto", label: t("settings_cliConfig_optAuto") },
-        { value: "iterm2", label: t("settings_cliConfig_optIterm2") },
-        { value: "terminal_bell", label: t("settings_cliConfig_optTerminalBell") },
-      ],
-    },
   ];
 
   const behaviorSettings = CLI_CONFIG_SETTINGS.filter((s) => s.group === "behavior");

@@ -335,8 +335,6 @@
   "settings_cliConfig_prStatusFooterDesc": "Show PR status in footer bar",
   "settings_cliConfig_updateChannelLabel": "Update Channel",
   "settings_cliConfig_updateChannelDesc": "Auto-update release channel",
-  "settings_cliConfig_notifChannelLabel": "Notification Channel",
-  "settings_cliConfig_notifChannelDesc": "How to deliver desktop notifications",
 
   "settings_cliConfig_optDefault": "Default",
   "settings_cliConfig_optPlan": "Plan",
@@ -350,8 +348,6 @@
   "settings_cliConfig_optHighContrast": "High Contrast",
   "settings_cliConfig_optLatest": "Latest",
   "settings_cliConfig_optStable": "Stable",
-  "settings_cliConfig_optIterm2": "iTerm2",
-  "settings_cliConfig_optTerminalBell": "Terminal Bell",
 
   "settings_codexConfig_title": "Codex",
   "settings_codexConfig_warning": "Codex config unavailable: {warning}",

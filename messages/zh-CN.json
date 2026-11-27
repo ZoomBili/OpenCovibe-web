@@ -335,8 +335,6 @@
   "settings_cliConfig_prStatusFooterDesc": "在页脚栏显示 PR 状态",
   "settings_cliConfig_updateChannelLabel": "更新通道",
   "settings_cliConfig_updateChannelDesc": "自动更新的发布通道",
-  "settings_cliConfig_notifChannelLabel": "通知方式",
-  "settings_cliConfig_notifChannelDesc": "桌面通知的推送方式",
 
   "settings_cliConfig_optDefault": "默认",
   "settings_cliConfig_optPlan": "计划",
@@ -350,8 +348,6 @@
   "settings_cliConfig_optHighContrast": "高对比度",
   "settings_cliConfig_optLatest": "最新",
   "settings_cliConfig_optStable": "稳定",
-  "settings_cliConfig_optIterm2": "iTerm2",
-  "settings_cliConfig_optTerminalBell": "终端铃声",
 
   "settings_codexConfig_title": "Codex",
   "settings_codexConfig_warning": "Codex 配置不可用：{warning}",
