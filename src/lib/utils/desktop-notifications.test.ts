@@ -4,9 +4,12 @@ import {
   DEDUP_MS,
   buildNotificationText,
   classifyBusEvent,
+  desktopStatusKind,
   eventAllowed,
+  nextDesktopToggleAction,
   projectLabel,
   shouldDisplayNotice,
+  type DesktopNotificationState,
   type DisplayDecision,
 } from "./desktop-notifications";
 
@@ -151,5 +154,44 @@ describe("buildNotificationText", () => {
       settings(),
     );
     expect(text.body).toContain("proj");
+  });
+});
+
+const state = (over: Partial<DesktopNotificationState> = {}): DesktopNotificationState => ({
+  supported: true,
+  secure: true,
+  permission: "granted",
+  enabled: false,
+  ...over,
+});
+
+describe("desktopStatusKind", () => {
+  it("reports insecure before unsupported because HTTP hides the API", () => {
+    expect(desktopStatusKind(state({ supported: false, secure: false }))).toBe("insecure");
+  });
+  it("reports unsupported when secure but the API is missing", () => {
+    expect(desktopStatusKind(state({ supported: false, secure: true }))).toBe("unsupported");
+  });
+  it("reports permission states", () => {
+    expect(desktopStatusKind(state({ permission: "granted" }))).toBe("granted");
+    expect(desktopStatusKind(state({ permission: "denied" }))).toBe("denied");
+    expect(desktopStatusKind(state({ permission: "default" }))).toBe("default");
+  });
+});
+
+describe("nextDesktopToggleAction", () => {
+  it("disables when currently enabled", () => {
+    expect(nextDesktopToggleAction(state({ enabled: true }))).toBe("disable");
+  });
+  it("does nothing when unusable", () => {
+    expect(nextDesktopToggleAction(state({ supported: false }))).toBe("noop");
+    expect(nextDesktopToggleAction(state({ secure: false }))).toBe("noop");
+  });
+  it("requests permission only from the default state", () => {
+    expect(nextDesktopToggleAction(state({ permission: "default" }))).toBe("request");
+    expect(nextDesktopToggleAction(state({ permission: "denied" }))).toBe("noop");
+  });
+  it("enables without re-requesting when permission is already granted", () => {
+    expect(nextDesktopToggleAction(state({ permission: "granted" }))).toBe("enable");
   });
 });

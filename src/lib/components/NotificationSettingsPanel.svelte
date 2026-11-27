@@ -5,7 +5,9 @@
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import {
+    desktopStatusKind,
     getState,
+    nextDesktopToggleAction,
     requestPermission,
     sendTest,
     setEnabled,
@@ -72,9 +74,11 @@
   }
 
   function desktopStatusLabel(): string {
-    if (!desktopState.supported) return t("settings_notifications_desktopUnsupported");
-    if (!desktopState.secure) return t("settings_notifications_desktopInsecure");
-    switch (desktopState.permission) {
+    switch (desktopStatusKind(desktopState)) {
+      case "unsupported":
+        return t("settings_notifications_desktopUnsupported");
+      case "insecure":
+        return t("settings_notifications_desktopInsecure");
       case "granted":
         return t("settings_notifications_desktopGranted");
       case "denied":
@@ -85,13 +89,14 @@
   }
 
   async function toggleDesktop() {
-    if (desktopState.enabled) {
+    const action = nextDesktopToggleAction(desktopState);
+    if (action === "disable") {
       setEnabled(false);
       refreshDesktopState();
       return;
     }
-    if (!canUseDesktop()) return;
-    if (desktopState.permission !== "granted") {
+    if (action === "noop") return;
+    if (action === "request") {
       const result = await requestPermission();
       refreshDesktopState();
       if (result !== "granted") return;

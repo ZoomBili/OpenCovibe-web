@@ -44,6 +44,36 @@ export interface DisplayDecision {
   now: number;
 }
 
+export type DesktopStatusKind = "unsupported" | "insecure" | "granted" | "denied" | "default";
+export type DesktopToggleAction = "disable" | "request" | "enable" | "noop";
+
+/**
+ * Classify what the settings card should tell the user.
+ * Insecure must win over unsupported: browsers hide the Notification API on
+ * plain http:// origins, so `supported` is false there and the actionable
+ * reason is "use HTTPS", not "your browser can't do this".
+ */
+export function desktopStatusKind(state: DesktopNotificationState): DesktopStatusKind {
+  if (!state.secure) return "insecure";
+  if (!state.supported) return "unsupported";
+  if (state.permission === "granted") return "granted";
+  if (state.permission === "denied") return "denied";
+  return "default";
+}
+
+/**
+ * Decide what flipping the switch should do. A denied permission cannot be
+ * re-prompted from JS, so the switch becomes a no-op instead of calling
+ * requestPermission() on every click.
+ */
+export function nextDesktopToggleAction(state: DesktopNotificationState): DesktopToggleAction {
+  if (state.enabled) return "disable";
+  if (!state.supported || !state.secure) return "noop";
+  if (state.permission === "granted") return "enable";
+  if (state.permission === "default") return "request";
+  return "noop";
+}
+
 const STORAGE_KEY = "ocv:desktop-notifications";
 export const DEDUP_MS = 10_000;
 
