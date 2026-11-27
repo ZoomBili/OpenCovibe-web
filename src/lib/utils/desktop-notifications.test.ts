@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import type { BusEvent, NotificationSettings } from "$lib/types";
 import {
   DEDUP_MS,
@@ -6,8 +6,10 @@ import {
   classifyBusEvent,
   desktopStatusKind,
   eventAllowed,
+  isActivelyViewing,
   nextDesktopToggleAction,
   projectLabel,
+  sendTest,
   shouldDisplayNotice,
   type DesktopNotificationState,
   type DisplayDecision,
@@ -193,5 +195,67 @@ describe("nextDesktopToggleAction", () => {
   });
   it("enables without re-requesting when permission is already granted", () => {
     expect(nextDesktopToggleAction(state({ permission: "granted" }))).toBe("enable");
+  });
+});
+
+describe("isActivelyViewing", () => {
+  it("only treats a visible and focused page as actively viewed", () => {
+    expect(isActivelyViewing("visible", true)).toBe(true);
+    expect(isActivelyViewing("visible", false)).toBe(false);
+    expect(isActivelyViewing("hidden", true)).toBe(false);
+    expect(isActivelyViewing("hidden", false)).toBe(false);
+  });
+});
+
+describe("sendTest", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubWindow(
+    permission: string,
+    opts: { secure?: boolean; missing?: boolean; throws?: boolean } = {},
+  ) {
+    const calls: unknown[][] = [];
+    class FakeNotification {
+      static permission = permission;
+      static requestPermission = vi.fn(async () => permission);
+      constructor(...args: unknown[]) {
+        if (opts.throws) throw new Error("nope");
+        calls.push(args);
+      }
+    }
+    const win: Record<string, unknown> = {
+      isSecureContext: opts.secure ?? true,
+      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+      location: { assign: vi.fn() },
+      focus: vi.fn(),
+    };
+    if (!opts.missing) win.Notification = FakeNotification;
+    vi.stubGlobal("window", win);
+    return { calls };
+  }
+
+  it("returns unsupported when the API is missing", () => {
+    stubWindow("granted", { missing: true });
+    expect(sendTest()).toBe("unsupported");
+  });
+  it("returns insecure on a non-secure origin", () => {
+    stubWindow("granted", { secure: false });
+    expect(sendTest()).toBe("insecure");
+  });
+  it("returns denied without constructing a notification", () => {
+    const { calls } = stubWindow("denied");
+    expect(sendTest()).toBe("denied");
+    expect(calls.length).toBe(0);
+  });
+  it("constructs a notification and reports sent", () => {
+    const { calls } = stubWindow("granted");
+    expect(sendTest()).toBe("sent");
+    expect(calls.length).toBe(1);
+  });
+  it("reports unsupported when construction throws", () => {
+    stubWindow("granted", { throws: true });
+    expect(sendTest()).toBe("unsupported");
   });
 });

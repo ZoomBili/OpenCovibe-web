@@ -13,6 +13,7 @@
     setEnabled,
     setSettings,
     type DesktopNotificationState,
+    type DesktopTestResult,
   } from "$lib/utils/desktop-notifications";
   import Card from "$lib/components/Card.svelte";
   import Button from "$lib/components/Button.svelte";
@@ -64,6 +65,7 @@
     null,
   );
   let desktopState = $state<DesktopNotificationState>(getState());
+  let desktopTestResult = $state<DesktopTestResult | null>(null);
 
   function refreshDesktopState() {
     desktopState = getState();
@@ -89,6 +91,7 @@
   }
 
   async function toggleDesktop() {
+    desktopTestResult = null;
     const action = nextDesktopToggleAction(desktopState);
     if (action === "disable") {
       setEnabled(false);
@@ -108,6 +111,10 @@
   async function requestDesktopPermission() {
     await requestPermission();
     refreshDesktopState();
+  }
+
+  function runDesktopTest() {
+    desktopTestResult = sendTest();
   }
 
   function applyToForm(next: NotificationSettings) {
@@ -318,11 +325,21 @@
             {t("settings_notifications_desktopRequest")}
           </Button>
         {:else if canUseDesktop() && desktopState.permission === "granted"}
-          <Button variant="outline" size="sm" onclick={sendTest}>
+          <Button variant="outline" size="sm" onclick={runDesktopTest}>
             {t("settings_notifications_desktopTest")}
           </Button>
         {/if}
       </div>
+
+      {#if desktopTestResult === "sent"}
+        <p class="text-[11px] leading-snug text-muted-foreground">
+          {t("settings_notifications_desktopTestSent")}
+        </p>
+      {:else if desktopTestResult === "unsupported" || desktopTestResult === "insecure"}
+        <p class="text-[11px] leading-snug text-amber-400">
+          {t("settings_notifications_desktopTestUnavailable")}
+        </p>
+      {/if}
 
       <p class="text-[11px] leading-snug text-muted-foreground">
         {t("settings_notifications_desktopHint")}

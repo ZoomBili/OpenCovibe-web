@@ -46,6 +46,17 @@ export interface DisplayDecision {
 
 export type DesktopStatusKind = "unsupported" | "insecure" | "granted" | "denied" | "default";
 export type DesktopToggleAction = "disable" | "request" | "enable" | "noop";
+export type DesktopTestResult = "sent" | "unsupported" | "insecure" | "denied";
+
+/**
+ * Whether the user is actually looking at this page. `visibilityState` alone is
+ * not enough: a browser window that is merely unfocused (user switched to
+ * another app, same desktop) still reports "visible", which would suppress the
+ * very notifications the user expects while working elsewhere.
+ */
+export function isActivelyViewing(visibilityState: string, hasFocus: boolean): boolean {
+  return visibilityState === "visible" && hasFocus;
+}
 
 /**
  * Classify what the settings card should tell the user.
@@ -270,7 +281,12 @@ export function notifyBusEvent(ev: BusEvent, ctx?: DesktopNotifyContext): void {
   const state = getState();
   const key = `${ev.run_id}:${kind}`;
   const now = Date.now();
-  const visible = typeof document !== "undefined" && document.visibilityState === "visible";
+  const visible =
+    typeof document !== "undefined" &&
+    isActivelyViewing(
+      document.visibilityState,
+      typeof document.hasFocus === "function" ? document.hasFocus() : true,
+    );
 
   if (
     !shouldDisplayNotice({
@@ -293,18 +309,22 @@ export function notifyBusEvent(ev: BusEvent, ctx?: DesktopNotifyContext): void {
 }
 
 /** Settings-page test button: ignores server switches, visibility and dedup. */
-export function sendTest(): void {
-  const Ctor = notificationCtor();
-  if (!Ctor || Ctor.permission !== "granted") return;
+export function sendTest(): DesktopTestResult {
+  if (typeof window === "undefined") return "unsupported";
+  if (!("Notification" in window)) return "unsupported";
+  if (window.isSecureContext === false) return "insecure";
+  if (window.Notification.permission !== "granted") return "denied";
   const zh = cachedSettings?.language !== "en";
   try {
-    new Ctor(zh ? "OpenCovibe · 测试通知" : "OpenCovibe · Test notification", {
+    new window.Notification(zh ? "OpenCovibe · 测试通知" : "OpenCovibe · Test notification", {
       body: zh
         ? "如果你看到这条通知，浏览器桌面通知已生效。"
         : "If you see this, browser desktop notifications work.",
       tag: "ocv-test",
     });
+    return "sent";
   } catch (e) {
     dbgWarn("desktop-notif", "test display failed", e);
+    return "unsupported";
   }
 }
