@@ -13,6 +13,7 @@ import {
   sendTest,
   setSettings,
   shouldDisplayNotice,
+  summarizeContent,
   type DesktopNotificationState,
   type DisplayDecision,
 } from "./desktop-notifications";
@@ -110,25 +111,34 @@ describe("projectLabel", () => {
 });
 
 describe("buildNotificationText", () => {
-  it("builds Chinese complete text with run name", () => {
+  it("uses the run name as the title and status plus reply as the body", () => {
+    const text = buildNotificationText(
+      "complete",
+      baseEvent("run_state", { state: "completed" }),
+      { runName: "修复登录", preview: "我修好了 `token` 刷新。\n\n并补了 3 个测试。" },
+      settings(),
+    );
+    expect(text.title).toBe("修复登录");
+    expect(text.body).toBe("已完成 · 我修好了 token 刷新。 并补了 3 个测试。");
+  });
+  it("builds English complete text", () => {
+    const text = buildNotificationText(
+      "complete",
+      baseEvent("run_state", { state: "completed" }),
+      { runName: "Fix login", preview: "Fixed the refresh flow." },
+      settings({ language: "en" }),
+    );
+    expect(text.title).toBe("Fix login");
+    expect(text.body).toBe("Completed · Fixed the refresh flow.");
+  });
+  it("falls back to a generic completion body without a preview", () => {
     const text = buildNotificationText(
       "complete",
       baseEvent("run_state", { state: "completed" }),
       { runName: "修复登录" },
       settings(),
     );
-    expect(text.title).toBe("OpenCovibe · 任务完成");
-    expect(text.body).toContain("修复登录");
-  });
-  it("builds English complete text", () => {
-    const text = buildNotificationText(
-      "complete",
-      baseEvent("run_state", { state: "completed" }),
-      { runName: "Fix login" },
-      settings({ language: "en" }),
-    );
-    expect(text.title).toBe("OpenCovibe · Task completed");
-    expect(text.body).toContain("Fix login");
+    expect(text.body).toBe("已完成 · 本轮对话已完成，等待你的下一步指令。");
   });
   it("uses the error message when present", () => {
     const text = buildNotificationText(
@@ -137,27 +147,59 @@ describe("buildNotificationText", () => {
       undefined,
       settings(),
     );
-    expect(text.title).toBe("OpenCovibe · 任务失败");
-    expect(text.body).toBe("boom");
+    expect(text.title).toBe("OpenCovibe");
+    expect(text.body).toBe("任务失败 · boom");
   });
-  it("names the tool for permission prompts", () => {
+  it("names the tool and its input for permission prompts", () => {
     const text = buildNotificationText(
       "permission",
-      baseEvent("permission_prompt", { tool_name: "Bash" }),
+      baseEvent("permission_prompt", {
+        tool_name: "Bash",
+        tool_input: { command: "npm run build" },
+      }),
       { runName: "修复登录" },
       settings(),
     );
-    expect(text.title).toBe("OpenCovibe · 等待审批");
-    expect(text.body).toContain("Bash");
+    expect(text.title).toBe("修复登录");
+    expect(text.body).toBe("等待审批 · 工具调用 Bash：npm run build");
   });
   it("falls back to the project basename when no run name is available", () => {
     const text = buildNotificationText(
       "complete",
       baseEvent("run_state", { state: "completed" }),
-      { cwd: "/home/me/proj" },
+      { cwd: "/home/me/proj", preview: "done" },
       settings(),
     );
-    expect(text.body).toContain("proj");
+    expect(text.title).toBe("proj");
+    expect(text.body).toBe("已完成 · done");
+  });
+  it("truncates a long reply", () => {
+    const text = buildNotificationText(
+      "complete",
+      baseEvent("run_state", { state: "completed" }),
+      { runName: "长回复", preview: "字".repeat(200) },
+      settings(),
+    );
+    expect(text.body.startsWith("已完成 · ")).toBe(true);
+    expect(text.body.endsWith("…")).toBe(true);
+    expect(text.body.length).toBeLessThan(140);
+  });
+});
+
+describe("summarizeContent", () => {
+  it("strips markdown and collapses whitespace", () => {
+    expect(summarizeContent("## 标题\n\n**完成**了 `npm test`\n\n- 第一项")).toBe(
+      "标题 完成了 npm test 第一项",
+    );
+  });
+  it("drops fenced code blocks", () => {
+    expect(summarizeContent("前面\n```js\nconst a = 1;\n```\n后面")).toBe("前面 后面");
+  });
+  it("truncates with an ellipsis", () => {
+    expect(summarizeContent("a".repeat(200), 10)).toBe("aaaaaaaaaa…");
+  });
+  it("returns an empty string for empty input", () => {
+    expect(summarizeContent("   \n  ")).toBe("");
   });
 });
 

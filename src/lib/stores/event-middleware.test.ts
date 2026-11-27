@@ -70,6 +70,8 @@ function fireBusEvent(ev: BusEvent): void {
 function mockStore() {
   return {
     run: { name: "Demo", cwd: "/tmp/demo" },
+    timeline: [{ kind: "assistant", id: "m1", anchorId: "m1", content: "答案", ts: "t" }],
+    streamingText: "",
     applyEvent: vi.fn(),
     applyEventBatch: vi.fn(),
     applyHookEvent: vi.fn(),
@@ -203,6 +205,25 @@ describe("EventMiddleware", () => {
       expect(notifyBusEvent).toHaveBeenCalledWith(ev, {
         runName: "Demo",
         cwd: "/tmp/demo",
+        preview: "答案",
+      });
+    });
+
+    it("includes a buffered reply preview in the notification context", async () => {
+      await mw.start();
+      const store = mockStore();
+      mw.subscribeCurrent("run-1", store as any);
+
+      fireBusEvent(
+        makeBusEvent("run-1", "message_complete", { message_id: "m2", text: "缓冲答案" }),
+      );
+      const idle = makeBusEvent("run-1", "run_state", { state: "completed" });
+      fireBusEvent(idle);
+
+      expect(notifyBusEvent).toHaveBeenLastCalledWith(idle, {
+        runName: "Demo",
+        cwd: "/tmp/demo",
+        preview: "缓冲答案",
       });
     });
   });

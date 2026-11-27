@@ -30,6 +30,8 @@ export interface DesktopNotificationState {
 export interface DesktopNotifyContext {
   runName?: string;
   cwd?: string;
+  /** Latest assistant reply text, used as the notification content. */
+  preview?: string;
 }
 
 export interface DisplayDecision {
@@ -142,6 +144,44 @@ export function projectLabel(cwd: string | undefined, mode: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
+/**
+ * Collapse markdown / whitespace into one notification-friendly line.
+ * Most notification centers render the body on a single line, so long replies
+ * are truncated with an ellipsis instead of being silently clipped.
+ */
+export function summarizeContent(text: string, max = 120): string {
+  const cleaned = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/^[ \t>#*\-+\d.]+/gm, "")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length <= max) return cleaned;
+  const sliced = cleaned.slice(0, max);
+  const lastSpace = sliced.lastIndexOf(" ");
+  const cut = lastSpace > max * 0.6 ? sliced.slice(0, lastSpace) : sliced;
+  return `${cut.trimEnd()}…`;
+}
+
+/** Pick the most informative field from a tool call input for the body. */
+function toolInputHint(input: Record<string, unknown> | undefined): string {
+  if (!input) return "";
+  const keys = ["command", "file_path", "path", "url", "pattern", "query", "prompt", "description"];
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  try {
+    const json = JSON.stringify(input);
+    return json === "{}" ? "" : json;
+  } catch {
+    return "";
+  }
+}
+
 export function buildNotificationText(
   kind: DesktopNotifyKind,
   ev: BusEvent,
@@ -150,54 +190,45 @@ export function buildNotificationText(
 ): { title: string; body: string } {
   const zh = settings?.language !== "en";
   const project = projectLabel(ctx?.cwd, settings?.project_path_mode ?? "basename");
-  const subject = (ctx?.runName ?? "").trim() || project;
+  // Scheme B: session name as the title, status + conversation content as the body.
+  const title = summarizeContent((ctx?.runName ?? "").trim() || project || "OpenCovibe", 60);
 
   if (kind === "error") {
     const detail = ev.type === "run_state" && typeof ev.error === "string" ? ev.error.trim() : "";
+    const content = summarizeContent(detail || ctx?.preview || "");
     const fallback = zh
-      ? subject
-        ? `「${subject}」运行失败。`
-        : "运行失败，请打开会话查看详情。"
-      : subject
-        ? `"${subject}" failed.`
-        : "The run failed. Open the session for details.";
+      ? "运行失败，请打开会话查看详情。"
+      : "The run failed. Open the session for details.";
     return {
-      title: zh ? "OpenCovibe · 任务失败" : "OpenCovibe · Task failed",
-      body: detail || fallback,
+      title,
+      body: `${zh ? "任务失败" : "Task failed"} · ${content || fallback}`,
     };
   }
 
   if (kind === "permission") {
     const tool = ev.type === "permission_prompt" ? ev.tool_name.trim() : "";
-    let body: string;
+    const hint = ev.type === "permission_prompt" ? toolInputHint(ev.tool_input) : "";
+    let detail: string;
     if (zh) {
-      if (tool && subject) body = `「${subject}」的工具调用「${tool}」等待审批。`;
-      else if (tool) body = `工具调用「${tool}」等待审批。`;
-      else if (subject) body = `「${subject}」正在等待你批准工具调用。`;
-      else body = "Agent 正在等待你批准工具调用。";
+      detail = tool
+        ? `工具调用 ${tool}${hint ? `：${hint}` : ""}`
+        : "Agent 正在等待你批准工具调用。";
     } else {
-      if (tool && subject)
-        body = `"${subject}" is waiting for approval of the "${tool}" tool call.`;
-      else if (tool) body = `The "${tool}" tool call is waiting for approval.`;
-      else if (subject) body = `"${subject}" is waiting for tool approval.`;
-      else body = "The agent is waiting for tool approval.";
+      detail = tool
+        ? `Tool call ${tool}${hint ? `: ${hint}` : ""}`
+        : "The agent is waiting for tool approval.";
     }
     return {
-      title: zh ? "OpenCovibe · 等待审批" : "OpenCovibe · Approval required",
-      body,
+      title,
+      body: `${zh ? "等待审批" : "Approval required"} · ${summarizeContent(detail)}`,
     };
   }
 
-  const body = zh
-    ? subject
-      ? `「${subject}」本轮对话已完成。`
-      : "本轮对话已完成，等待你的下一步指令。"
-    : subject
-      ? `"${subject}" finished this turn.`
-      : "The agent finished this turn.";
+  const content = summarizeContent(ctx?.preview ?? "");
+  const fallback = zh ? "本轮对话已完成，等待你的下一步指令。" : "The agent finished this turn.";
   return {
-    title: zh ? "OpenCovibe · 任务完成" : "OpenCovibe · Task completed",
-    body,
+    title,
+    body: `${zh ? "已完成" : "Completed"} · ${content || fallback}`,
   };
 }
 

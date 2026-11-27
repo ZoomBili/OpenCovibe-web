@@ -224,7 +224,11 @@ export class EventMiddleware {
     const store = this._subscriptions.get(ev.run_id);
     // Browser notifications are decided independently of store subscription so
     // the notification module can be tested in isolation; ctx is only metadata.
-    notifyBusEvent(ev, store ? { runName: store.run?.name, cwd: store.run?.cwd } : undefined);
+    notifyBusEvent(ev, {
+      runName: store?.run?.name,
+      cwd: store?.run?.cwd,
+      preview: this._notificationPreview(ev.run_id, store),
+    });
     if (!store) return;
 
     // Push to batch buffer
@@ -290,6 +294,30 @@ export class EventMiddleware {
         }
         break;
     }
+  }
+
+  /**
+   * Latest assistant reply for a notification body.
+   * Prefer a `message_complete` still waiting in the 16ms batch buffer: when
+   * `run_state(idle)` arrives in the same frame, the store has not applied it
+   * yet, and the notification would otherwise show the previous turn.
+   */
+  private _notificationPreview(runId: string, store: SessionStore | undefined): string | undefined {
+    const buffered = this._batchBuffer.get(runId);
+    if (buffered) {
+      for (let i = buffered.length - 1; i >= 0; i--) {
+        const e = buffered[i];
+        if (e.type === "message_complete" && !e.parent_tool_use_id && e.text.trim()) {
+          return e.text;
+        }
+      }
+    }
+    if (!store) return undefined;
+    for (let i = store.timeline.length - 1; i >= 0; i--) {
+      const entry = store.timeline[i];
+      if (entry.kind === "assistant" && entry.content.trim()) return entry.content;
+    }
+    return store.streamingText.trim() || undefined;
   }
 
   private _handleHookEvent(event: HookEvent): void {
